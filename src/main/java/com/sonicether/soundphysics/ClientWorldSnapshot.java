@@ -252,7 +252,9 @@ public final class ClientWorldSnapshot implements IBlockAccess {
     @Nullable
     public RayTraceResult rayTraceBlocks(Vec3d start, Vec3d end, boolean stopOnLiquid) {
         if (Double.isNaN(start.x) || Double.isNaN(start.y) || Double.isNaN(start.z) ||
-                Double.isNaN(end.x) || Double.isNaN(end.y) || Double.isNaN(end.z)) {
+                Double.isNaN(end.x) || Double.isNaN(end.y) || Double.isNaN(end.z) ||
+                Double.isInfinite(start.x) || Double.isInfinite(start.y) || Double.isInfinite(start.z) ||
+                Double.isInfinite(end.x) || Double.isInfinite(end.y) || Double.isInfinite(end.z)) {
             return null;
         }
 
@@ -264,21 +266,22 @@ public final class ClientWorldSnapshot implements IBlockAccess {
         int endY = MathHelper.floor(end.y);
         int endZ = MathHelper.floor(end.z);
 
-        // Do not trace through chunks that are not present in the snapshot.
         if (getChunkSnapshot(x >> 4, z >> 4) == null) {
             return null;
         }
 
-        RayTraceResult hit = rayTraceBlock(
+        final double segmentLength = start.distanceTo(end);
+
+        RayTraceResult closestHit = rayTraceBlock(
                 new BlockPos(x, y, z),
                 start,
                 end,
                 stopOnLiquid
         );
 
-        if (hit != null) {
-            return hit;
-        }
+        double closestHitDistance = closestHit == null
+                ? Double.POSITIVE_INFINITY
+                : start.distanceTo(closestHit.hitVec);
 
         double deltaX = end.x - start.x;
         double deltaY = end.y - start.y;
@@ -301,35 +304,54 @@ public final class ClientWorldSnapshot implements IBlockAccess {
         double tDeltaY = stepY == 0 ? Double.POSITIVE_INFINITY : Math.abs(1.0D / deltaY);
         double tDeltaZ = stepZ == 0 ? Double.POSITIVE_INFINITY : Math.abs(1.0D / deltaZ);
 
-        final int maxSteps = (int) Math.ceil(
-                Math.abs(deltaX) +
-                        Math.abs(deltaY) +
-                        Math.abs(deltaZ)
-        ) + 3;
+        final int maxSteps = Math.abs(endX - x) +
+                Math.abs(endY - y) +
+                Math.abs(endZ - z) + 3;
 
         for (int steps = 0; steps < maxSteps; steps++) {
+
             if (x == endX && y == endY && z == endZ) {
-                return null;
+                return closestHit;
             }
 
-            if (tMaxX <= tMaxY && tMaxX <= tMaxZ) {
+            double nextT = Math.min(tMaxX, Math.min(tMaxY, tMaxZ));
+
+            if (Double.isInfinite(nextT) || nextT > 1.0D) {
+                return closestHit;
+            }
+
+            double nextDistance = segmentLength * nextT;
+
+            if (closestHit != null &&
+                    closestHitDistance <= nextDistance + 1.0E-7D) {
+                return closestHit;
+            }
+
+            // Advance every axis crossed at this exact ray position.
+            boolean stepOnX = Math.abs(tMaxX - nextT) <= 1.0E-10D;
+            boolean stepOnY = Math.abs(tMaxY - nextT) <= 1.0E-10D;
+            boolean stepOnZ = Math.abs(tMaxZ - nextT) <= 1.0E-10D;
+
+            if (stepOnX) {
                 x += stepX;
                 tMaxX += tDeltaX;
-            } else if (tMaxY <= tMaxZ) {
+            }
+
+            if (stepOnY) {
                 y += stepY;
                 tMaxY += tDeltaY;
-            } else {
+            }
+
+            if (stepOnZ) {
                 z += stepZ;
                 tMaxZ += tDeltaZ;
             }
 
-            // Stop immediately when the ray leaves the cached chunk area.
-            // There is no valid block data beyond this point.
             if (getChunkSnapshot(x >> 4, z >> 4) == null) {
                 return null;
             }
 
-            hit = rayTraceBlock(
+            RayTraceResult hit = rayTraceBlock(
                     new BlockPos(x, y, z),
                     start,
                     end,
@@ -337,33 +359,29 @@ public final class ClientWorldSnapshot implements IBlockAccess {
             );
 
             if (hit != null) {
-                return hit;
+                double hitDistance = start.distanceTo(hit.hitVec);
+
+                if (hitDistance < closestHitDistance) {
+                    closestHit = hit;
+                    closestHitDistance = hitDistance;
+                }
             }
         }
 
-        return null;
+        return closestHit;
     }
 
     @Nullable
-    private RayTraceResult rayTraceBlock(BlockPos pos, Vec3d start, Vec3d end, boolean stopOnLiquid) {
+    private RayTraceResult rayTraceBlock(
+            BlockPos pos,
+            Vec3d start,
+            Vec3d end,
+            boolean stopOnLiquid
+    ) {
         IBlockState state = getBlockState(pos);
         Block block = state.getBlock();
 
         if (!block.canCollideCheck(state, stopOnLiquid)) {
-            return null;
-        }
-
-        AxisAlignedBB box = state.getCollisionBoundingBox(this, pos);
-
-        if (box == null || box == Block.NULL_AABB) {
-            if (!state.getMaterial().isLiquid()) {
-                return null;
-            }
-
-            box = state.getBoundingBox(this, pos);
-        }
-
-        if (box == null || box == Block.NULL_AABB) {
             return null;
         }
 
@@ -379,6 +397,44 @@ public final class ClientWorldSnapshot implements IBlockAccess {
                 end.z - pos.getZ()
         );
 
+        RayTraceResult collisionHit = rayTraceBox(
+                pos,
+                state.getCollisionBoundingBox(this, pos),
+                localStart,
+                localEnd
+        );
+
+        RayTraceResult interactionHit = rayTraceBox(
+                pos,
+                state.getBoundingBox(this, pos),
+                localStart,
+                localEnd
+        );
+
+        if (collisionHit == null) {
+            return interactionHit;
+        }
+
+        if (interactionHit == null) {
+            return collisionHit;
+        }
+
+        return start.distanceTo(collisionHit.hitVec) <= start.distanceTo(interactionHit.hitVec)
+                ? collisionHit
+                : interactionHit;
+    }
+
+    @Nullable
+    private RayTraceResult rayTraceBox(
+            BlockPos pos,
+            AxisAlignedBB box,
+            Vec3d localStart,
+            Vec3d localEnd
+    ) {
+        if (box == null || box == Block.NULL_AABB) {
+            return null;
+        }
+
         RayTraceResult localHit = box.calculateIntercept(localStart, localEnd);
 
         if (localHit == null) {
@@ -391,7 +447,11 @@ public final class ClientWorldSnapshot implements IBlockAccess {
                 localHit.hitVec.z + pos.getZ()
         );
 
-        return new RayTraceResult(hitVec, localHit.sideHit, pos);
+        return new RayTraceResult(
+                hitVec,
+                localHit.sideHit,
+                pos
+        );
     }
 
     private static final class ChunkSnapshot {
