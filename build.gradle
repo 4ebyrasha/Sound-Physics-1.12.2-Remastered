@@ -111,6 +111,10 @@ minecraft {
 }
 
 repositories {
+    flatDir {
+        dirs 'libs'
+    }
+
     maven {
         name 'CleanroomMC Maven'
         url 'https://maven.cleanroommc.com'

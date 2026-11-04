@@ -1,19 +1,7 @@
 apply from: 'gradle/scripts/helpers.gradle'
 
 repositories {
-    // Other repositories described by default:
-    // CleanroomMC: https://maven.cleanroommc.com
-    exclusiveContent {
-        forRepository {
-            maven {
-                name 'CurseMaven'
-                url 'https://cursemaven.com'
-            }
-        }
-        filter {
-            includeGroup 'curse.maven'
-        }
-    }
+    // Modrinth
     exclusiveContent {
         forRepository {
             maven {
@@ -25,9 +13,7 @@ repositories {
             includeGroup 'maven.modrinth'
         }
     }
-    flatDir {
-        dirs 'libs'
-    }
+
     mavenLocal() // Must be last for caching to work
 }
 
