@@ -1558,26 +1558,12 @@ public class SoundPhysics {
 				setSoundPos(sourceID, redirectedSoundPos);
 			}
 
-			if (Config.debugSoundDirection) {
-
-				if (redirectedSoundPos != null) {
-
-					logger.info(
-							"[Sound Direction Debug] Original: {} | Redirected: {}",
-							soundPos,
-							redirectedSoundPos
-					);
-
-				} else {
-
-					logger.info(
-							"[Sound Direction Debug] No redirection. Source: {}",
-							soundPos
-					);
-				}
-			}
-
-			directionDebug.finish(redirectedSoundPos);
+			directionDebug.finish(
+					redirectedSoundPos,
+					reflectedAudio,
+					sourceID,
+					occlusionAccumulation
+			);
 
 			bounceReflectivityRatio[0] /= numRays;
 			bounceReflectivityRatio[1] /= numRays;

@@ -1,24 +1,16 @@
-
 package com.sonicether.soundphysics;
 
-import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.WorldClient;
-import net.minecraft.client.renderer.BufferBuilder;
-import net.minecraft.client.renderer.GlStateManager;
-import net.minecraft.client.renderer.Tessellator;
-import net.minecraft.client.renderer.entity.RenderManager;
-import net.minecraft.client.renderer.vertex.DefaultVertexFormats;
 import net.minecraft.util.math.Vec3d;
-import net.minecraftforge.client.event.RenderWorldLastEvent;
-import net.minecraftforge.common.MinecraftForge;
-import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
-import org.lwjgl.opengl.GL11;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
+import java.util.Locale;
 
 public final class SoundDirectionDebug {
+
+    private static final Logger LOGGER =
+            LogManager.getLogger("SoundPhysics");
 
     public static final int COLOR_SOURCE = 0xFFFFA000;
     public static final int COLOR_LISTENER = 0xFFFFFFFF;
@@ -34,29 +26,14 @@ public final class SoundDirectionDebug {
     public static final int COLOR_APPARENT = 0xFFFF00FF;
     public static final int COLOR_EXPECTED = 0xFF0080FF;
 
-    private static final int RAY_LIFESPAN_TICKS = 40;
-
-    private static final double MAX_RENDER_DISTANCE_SQUARED =
-            32.0D * 32.0D;
-
-    private static final List<DebugRay> RAYS =
-            new ArrayList<>();
-
-    private static volatile boolean registered;
-
     private SoundDirectionDebug() {
     }
 
+    /**
+     * Kept for compatibility with the existing preInit registration.
+     * No renderer or event listener is registered anymore.
+     */
     public static void register() {
-        if (registered) {
-            return;
-        }
-
-        MinecraftForge.EVENT_BUS.register(
-                new SoundDirectionDebug()
-        );
-
-        registered = true;
     }
 
     public static Builder begin(
@@ -67,18 +44,14 @@ public final class SoundDirectionDebug {
     ) {
         return new Builder(
                 Config.debugSoundDirection,
-                world,
                 source,
-                listener
+                listener,
+                soundName
         );
     }
 
     /**
-     * Adds an occlusion ray.
-     *
-     * Occlusion rays are rendered through blocks.
-     * This matches the throughWalls behavior of the original
-     * Sound Physics Remastered RaycastRenderer.
+     * Visual occlusion rays are intentionally disabled.
      */
     public static void addOcclusionRay(
             WorldClient world,
@@ -86,79 +59,35 @@ public final class SoundDirectionDebug {
             Vec3d end,
             int color
     ) {
-        addRay(
-                world,
-                start,
-                end,
-                color,
-                true
-        );
-    }
-
-    /**
-     * Adds a single ray to the shared renderer list.
-     */
-    private static void addRay(
-            WorldClient world,
-            Vec3d start,
-            Vec3d end,
-            int color,
-            boolean throughWalls
-    ) {
-        if (!Config.debugSoundDirection ||
-                world == null ||
-                start == null ||
-                end == null) {
-            return;
-        }
-
-        DebugRay ray = new DebugRay(
-                world,
-                start,
-                end,
-                color,
-                world.getTotalWorldTime(),
-                throughWalls
-        );
-
-        synchronized (RAYS) {
-            RAYS.add(ray);
-        }
     }
 
     public static final class Builder {
 
         private final boolean enabled;
+
+        private final Vec3d source;
         private final Vec3d listener;
 
-        private final WorldClient world;
+        private final String soundName;
 
-        private final List<DebugLine> lines =
-                new ArrayList<>();
+        private int directClearLines;
+        private int primaryRayLines;
+        private int bounceLines;
+
+        private int validPaths;
+        private int blockedPaths;
+        private int unknownPaths;
 
         private Builder(
                 boolean enabled,
-                WorldClient world,
                 Vec3d source,
-                Vec3d listener
+                Vec3d listener,
+                String soundName
         ) {
             this.enabled = enabled;
-            this.world = world;
+            this.source = source;
             this.listener = listener;
-
-            if (enabled) {
-                addMarker(
-                        source,
-                        COLOR_SOURCE,
-                        0.35D
-                );
-
-                addMarker(
-                        listener,
-                        COLOR_LISTENER,
-                        0.35D
-                );
-            }
+            this.soundName = soundName;
         }
 
         public void addLine(
@@ -166,391 +95,137 @@ public final class SoundDirectionDebug {
                 Vec3d to,
                 int color
         ) {
-            addLine(
-                    from,
-                    to,
-                    color,
-                    false
-            );
+            if (!enabled) {
+                return;
+            }
+
+            if (color == COLOR_DIRECT_CLEAR) {
+                directClearLines++;
+            } else if (color == COLOR_PRIMARY) {
+                primaryRayLines++;
+            } else if (color == COLOR_BOUNCE) {
+                bounceLines++;
+            } else if (color == COLOR_VALID) {
+                validPaths++;
+            } else if (color == COLOR_BLOCKED) {
+                blockedPaths++;
+            } else if (color == COLOR_UNKNOWN) {
+                unknownPaths++;
+            }
         }
 
-        /**
-         * Adds a line with an explicit depth-test mode.
-         * <p>
-         * throughWalls = false:
-         * The line is hidden behind blocks.
-         * <p>
-         * throughWalls = true:
-         * The line is rendered over blocks.
-         */
         public void addLine(
                 Vec3d from,
                 Vec3d to,
                 int color,
                 boolean throughWalls
         ) {
-            if (!enabled || from == null || to == null) {
-                return;
-            }
-
-            lines.add(
-                    new DebugLine(
-                            from,
-                            to,
-                            color,
-                            throughWalls
-                    )
-            );
+            addLine(from, to, color);
         }
 
-        /**
-         * Draws a 3D cross at the specified position.
-         */
         public void addMarker(
                 Vec3d position,
                 int color,
                 double size
         ) {
-            if (!enabled || position == null) {
-                return;
-            }
+            // No visual markers.
+        }
 
-            addLine(
-                    position.add(-size, 0.0D, 0.0D),
-                    position.add(size, 0.0D, 0.0D),
-                    color
-            );
-
-            addLine(
-                    position.add(0.0D, -size, 0.0D),
-                    position.add(0.0D, size, 0.0D),
-                    color
-            );
-
-            addLine(
-                    position.add(0.0D, 0.0D, -size),
-                    position.add(0.0D, 0.0D, size),
-                    color
+        public void finish(Vec3d apparentPosition) {
+            finish(
+                    apparentPosition,
+                    null,
+                    -1,
+                    Double.NaN
             );
         }
 
-        /**
-         * Publishes every collected line.
-         * <p>
-         * Unlike the previous implementation, this does not
-         * replace or lock an existing debug frame.
-         * <p>
-         * Multiple sounds can be displayed simultaneously.
-         */
-        public void finish(Vec3d apparentPosition) {
-            if (!enabled || world == null) {
+        public void finish(
+                Vec3d apparentPosition,
+                ReflectedAudio reflectedAudio,
+                int sourceID,
+                double occlusion
+        ) {
+            if (!enabled) {
                 return;
             }
+
+            Vec3d originalDirection =
+                    source.subtract(listener).normalize();
+
+            Vec3d apparentDirection = apparentPosition == null
+                    ? Vec3d.ZERO
+                    : apparentPosition.subtract(listener).normalize();
+
+            double angleDifference = Double.NaN;
 
             if (apparentPosition != null) {
-                addLine(
-                        listener,
-                        apparentPosition,
-                        COLOR_APPARENT
+                double dot = originalDirection.dotProduct(
+                        apparentDirection
                 );
 
-                addMarker(
-                        apparentPosition,
-                        COLOR_APPARENT,
-                        0.5D
+                dot = Math.max(-1.0D, Math.min(1.0D, dot));
+
+                angleDifference = Math.toDegrees(
+                        Math.acos(dot)
                 );
             }
 
-            long createdAt = world.getTotalWorldTime();
+            String status = reflectedAudio == null
+                    ? "NOT_AVAILABLE"
+                    : reflectedAudio.getResultStatus();
 
-            synchronized (RAYS) {
-                for (DebugLine line : lines) {
-                    RAYS.add(
-                            new DebugRay(
-                                    world,
-                                    line.from,
-                                    line.to,
-                                    line.color,
-                                    createdAt,
-                                    line.throughWalls
-                            )
-                    );
-                }
-            }
-        }
-    }
+            int samples = reflectedAudio == null
+                    ? 0
+                    : reflectedAudio.getSampleCount();
 
-    private static final class DebugLine {
+            double coherence = reflectedAudio == null
+                    ? 0.0D
+                    : reflectedAudio.getDirectionCoherence();
 
-        private final Vec3d from;
-        private final Vec3d to;
+            boolean directDirection =
+                    reflectedAudio != null &&
+                            reflectedAudio.hasDirectDirection();
 
-        private final int color;
+            String sampleSummary = reflectedAudio == null
+                    ? "[]"
+                    : reflectedAudio.getSampleSummary(8);
 
-        private final boolean throughWalls;
-
-        private DebugLine(
-                Vec3d from,
-                Vec3d to,
-                int color,
-                boolean throughWalls
-        ) {
-            this.from = from;
-            this.to = to;
-            this.color = color;
-            this.throughWalls = throughWalls;
-        }
-    }
-
-    private static final class DebugRay {
-
-        private final WorldClient world;
-
-        private final Vec3d start;
-        private final Vec3d end;
-
-        private final int color;
-
-        private final long createdAt;
-
-        private final boolean throughWalls;
-
-        private DebugRay(
-                WorldClient world,
-                Vec3d start,
-                Vec3d end,
-                int color,
-                long createdAt,
-                boolean throughWalls
-        ) {
-            this.world = world;
-            this.start = start;
-            this.end = end;
-            this.color = color;
-            this.createdAt = createdAt;
-            this.throughWalls = throughWalls;
-        }
-    }
-
-
-    @SubscribeEvent
-    public void onRenderWorldLast(RenderWorldLastEvent event) {
-
-        if (!Config.debugSoundDirection) {
-            synchronized (RAYS) {
-                RAYS.clear();
-            }
-            return;
-        }
-
-        Minecraft mc = Minecraft.getMinecraft();
-
-        if (mc.world == null) {
-            synchronized (RAYS) {
-                RAYS.clear();
-            }
-            return;
-        }
-
-        RenderManager renderManager = mc.getRenderManager();
-
-        final double renderX = renderManager.viewerPosX;
-        final double renderY = renderManager.viewerPosY;
-        final double renderZ = renderManager.viewerPosZ;
-
-        final long currentTick = mc.world.getTotalWorldTime();
-
-        List<DebugRay> visibleRays = new ArrayList<>();
-
-        synchronized (RAYS) {
-            Iterator<DebugRay> iterator = RAYS.iterator();
-
-            while (iterator.hasNext()) {
-                DebugRay ray = iterator.next();
-
-                long age = currentTick - ray.createdAt;
-
-                if (ray.world != mc.world ||
-                        age < 0L ||
-                        age > RAY_LIFESPAN_TICKS) {
-                    iterator.remove();
-                    continue;
-                }
-
-                if (isWithinRenderDistance(
-                        ray,
-                        renderX,
-                        renderY,
-                        renderZ
-                )) {
-                    visibleRays.add(ray);
-                }
-            }
-        }
-
-        if (visibleRays.isEmpty()) {
-            return;
-        }
-
-        // Save the active matrix mode.
-        final int previousMatrixMode =
-                GL11.glGetInteger(GL11.GL_MATRIX_MODE);
-
-        GL11.glPushAttrib(GL11.GL_ALL_ATTRIB_BITS);
-
-        // IMPORTANT: world coordinates must use MODELVIEW.
-        GL11.glMatrixMode(GL11.GL_MODELVIEW);
-        GL11.glPushMatrix();
-
-        try {
-            // Translate world coordinates relative to the camera.
-            GL11.glTranslated(
-                    -renderX,
-                    -renderY,
-                    -renderZ
-            );
-
-            GL11.glDisable(GL11.GL_TEXTURE_2D);
-            GL11.glDisable(GL11.GL_LIGHTING);
-
-            GL11.glEnable(GL11.GL_BLEND);
-
-            GL11.glBlendFunc(
-                    GL11.GL_SRC_ALPHA,
-                    GL11.GL_ONE_MINUS_SRC_ALPHA
-            );
-
-            // Do not modify the world's depth buffer.
-            GL11.glDepthMask(false);
-
-            GL11.glLineWidth(2.0F);
-
-            // Normal rays: occluded by blocks.
-            GL11.glEnable(GL11.GL_DEPTH_TEST);
-
-            drawRays(visibleRays, false);
-
-            // Occlusion rays: visible through blocks.
-            GL11.glDisable(GL11.GL_DEPTH_TEST);
-
-            drawRays(visibleRays, true);
-
-        } finally {
-            GL11.glMatrixMode(GL11.GL_MODELVIEW);
-            GL11.glPopMatrix();
-
-            GL11.glPopAttrib();
-
-            GL11.glMatrixMode(previousMatrixMode);
-        }
-    }
-
-
-    private static boolean isWithinRenderDistance(
-            DebugRay ray,
-            double cameraX,
-            double cameraY,
-            double cameraZ
-    ) {
-        return distanceSquared(
-                ray.start,
-                cameraX,
-                cameraY,
-                cameraZ
-        ) <= MAX_RENDER_DISTANCE_SQUARED ||
-
-                distanceSquared(
-                        ray.end,
-                        cameraX,
-                        cameraY,
-                        cameraZ
-                ) <= MAX_RENDER_DISTANCE_SQUARED;
-    }
-
-    private static double distanceSquared(
-            Vec3d position,
-            double x,
-            double y,
-            double z
-    ) {
-        double dx = position.x - x;
-        double dy = position.y - y;
-        double dz = position.z - z;
-
-        return dx * dx + dy * dy + dz * dz;
-    }
-
-    private static void drawRays(
-            List<DebugRay> rays,
-            boolean throughWalls
-    ) {
-        boolean hasRays = false;
-
-        for (DebugRay ray : rays) {
-            if (ray.throughWalls == throughWalls) {
-                hasRays = true;
-                break;
-            }
-        }
-
-        if (!hasRays) {
-            return;
-        }
-
-        Tessellator tessellator =
-                Tessellator.getInstance();
-
-        BufferBuilder buffer =
-                tessellator.getBuffer();
-
-        buffer.begin(
-                GL11.GL_LINES,
-                DefaultVertexFormats.POSITION_COLOR
-        );
-
-        for (DebugRay ray : rays) {
-
-            if (ray.throughWalls != throughWalls) {
-                continue;
-            }
-
-            addVertex(
-                    buffer,
-                    ray.start,
-                    ray.color
-            );
-
-            addVertex(
-                    buffer,
-                    ray.end,
-                    ray.color
+            LOGGER.info(
+                    String.format(
+                            Locale.ROOT,
+                            "[Sound Direction] sound=%s sourceID=%d status=%s " +
+                                    "occlusion=%.4f " +
+                                    "source=%s listener=%s " +
+                                    "originalDir=%s apparentDir=%s " +
+                                    "angleDifference=%.2f degrees " +
+                                    "apparentPosition=%s " +
+                                    "directPath=%s " +
+                                    "primaryRays=%d bounceSegments=%d " +
+                                    "validPaths=%d blockedPaths=%d unknownPaths=%d " +
+                                    "reflectionSamples=%d coherence=%.5f " +
+                                    "samples=%s",
+                            soundName,
+                            sourceID,
+                            status,
+                            occlusion,
+                            source,
+                            listener,
+                            originalDirection,
+                            apparentDirection,
+                            angleDifference,
+                            apparentPosition,
+                            directDirection ? "CLEAR" : "NO_DIRECT_PATH",
+                            primaryRayLines,
+                            bounceLines,
+                            validPaths,
+                            blockedPaths,
+                            unknownPaths,
+                            samples,
+                            coherence,
+                            sampleSummary
+                    )
             );
         }
-
-        tessellator.draw();
-    }
-
-    private static void addVertex(
-            BufferBuilder buffer,
-            Vec3d position,
-            int color
-    ) {
-        int alpha = (color >>> 24) & 255;
-        int red = (color >>> 16) & 255;
-        int green = (color >>> 8) & 255;
-        int blue = color & 255;
-
-        // Positions are absolute world coordinates.
-        // The camera translation is applied by the render matrix.
-        buffer.pos(
-                position.x,
-                position.y,
-                position.z
-        ).color(
-                red,
-                green,
-                blue,
-                alpha
-        ).endVertex();
     }
 }

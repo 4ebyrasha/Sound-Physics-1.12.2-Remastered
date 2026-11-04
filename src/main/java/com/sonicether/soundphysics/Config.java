@@ -540,7 +540,7 @@ public class Config {
 				"Debug Sound Direction",
 				categoryMisc,
 				false,
-				"Renders sound direction rays, reflections, visible paths and the calculated apparent sound position in the world"
+				"Writes detailed text diagnostics for sound direction evaluation to the client log. Includes ray counts, reflection paths, direction coherence and apparent source position."
 		);
 
 
