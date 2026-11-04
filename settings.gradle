@@ -1,8 +1,19 @@
 pluginManagement {
     repositories {
+        flatDir {
+            dirs 'libs'
+        }
         gradlePluginPortal()
         mavenCentral()
         mavenLocal()
+    }
+
+    resolutionStrategy {
+        eachPlugin {
+            if (requested.id.id == 'com.gtnewhorizons.retrofuturagradle') {
+                useModule('com.gtnewhorizons:retrofuturagradle:2.0.2')
+            }
+        }
     }
 }
 

@@ -9,6 +9,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.audio.ISound;
 import net.minecraft.client.audio.MovingSound;
 import net.minecraft.entity.Entity;
+import net.minecraft.entity.item.EntityBoat;
 import net.minecraft.util.EnumFacing;
 import net.minecraft.util.ResourceLocation;
 import net.minecraft.util.SoundCategory;
@@ -35,7 +36,6 @@ import java.nio.IntBuffer;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.regex.Pattern;
 
-import static com.sonicether.soundphysics.ClientHelper.isInsideOfMaterial;
 
 @Mod(modid = SoundPhysics.modid, clientSideOnly = true, acceptedMinecraftVersions = SoundPhysics.mcVersion, version = Tags.VERSION, guiFactory = "com.sonicether.soundphysics.SPGuiFactory")
 public class SoundPhysics {
@@ -60,6 +60,7 @@ public class SoundPhysics {
 	@Mod.EventHandler
 	public void preInit(final FMLPreInitializationEvent event) {
 		Config.instance.preInit(event);
+		ClientWorldSnapshotManager.register();
 	}
 
 	@Mod.EventHandler
@@ -300,18 +301,27 @@ public class SoundPhysics {
 	}
 
 	// Copy of isRainingAt
-	private static boolean isSnowingAt(BlockPos position, boolean check_rain) {
-		if ((check_rain && !mc.world.isRaining()) || !mc.world.canSeeSky(position) ||
-				mc.world.getPrecipitationHeight(position).getY() > position.getY()) {
+	private static boolean isSnowingAt(BlockPos position, boolean check_rain, ClientWorldSnapshot worldSnapshot) {
+		if ((check_rain && !worldSnapshot.isRaining()) || !worldSnapshot.canSeeSky(position) ||
+				worldSnapshot.getPrecipitationHeight(position).getY() > position.getY()) {
 			return false;
 		} else {
-			return mc.world.canSnowAt(position, false) || mc.world.getBiome(position).getEnableSnow();
+			return worldSnapshot.canSnowAt(position) || worldSnapshot.getBiome(position).getEnableSnow();
 		}
 	}
 
+	private static boolean isPlayerInsideOfMaterial(final Material material, final ClientWorldSnapshot worldSnapshot) {
+		if (mc.player.getRidingEntity() instanceof EntityBoat) {
+			return false;
+		}
+		final double eyeY = mc.player.posY + getPlayerEyeHeight();
+		final BlockPos eyePos = new BlockPos(mc.player.posX, eyeY, mc.player.posZ);
+		return worldSnapshot.getBlockState(eyePos).getMaterial() == material;
+	}
+
 	@SuppressWarnings("deprecation")
-	private static float getBlockReflectivity(final BlockPos blockPos) {
-		final Block block = mc.world.getBlockState(blockPos).getBlock();
+	private static float getBlockReflectivity(final BlockPos blockPos, final ClientWorldSnapshot worldSnapshot) {
+		final Block block = worldSnapshot.getBlockState(blockPos).getBlock();
 		final SoundType soundType = block.getSoundType();
 
 		float reflectivity = 0.5f;
@@ -360,7 +370,8 @@ public class SoundPhysics {
 	}
 
 	private static Vec3d offsetSoundByName(final double soundX, final double soundY, final double soundZ,
-										   final Vec3d playerPos, final String name, final SoundCategory category) {
+										   final Vec3d playerPos, final String name, final SoundCategory category,
+										   final ClientWorldSnapshot worldSnapshot) {
 		double offsetX = 0.0;
 		double offsetY = 0.0;
 		double offsetZ = 0.0;
@@ -375,7 +386,7 @@ public class SoundPhysics {
 		}
 
 		if ((category == SoundCategory.BLOCKS || blockPattern.matcher(name).matches() ||
-				(name.equals("openal") && !mc.world.isAirBlock(new BlockPos(soundX,soundY,soundZ)))) &&
+				(name.equals("openal") && !worldSnapshot.isAirBlock(new BlockPos(soundX,soundY,soundZ)))) &&
 				(MathHelper.floor(playerPos.x) != MathHelper.floor(soundX) ||
 						MathHelper.floor(playerPos.y) != MathHelper.floor(soundY) ||
 						MathHelper.floor(playerPos.z) != MathHelper.floor(soundZ))) {
@@ -417,9 +428,10 @@ public class SoundPhysics {
 	 * sound to pass through small openings that a single ray could miss.
 	 */
 	private static float calculateOcclusion(final Vec3d soundPos, final Vec3d playerPos,
-											final SoundCategory category, final String name) {
+											final SoundCategory category, final String name,
+											final ClientWorldSnapshot worldSnapshot) {
 		if (Config.strictOcclusion) {
-			return runOcclusion(soundPos, playerPos);
+			return runOcclusion(soundPos, playerPos, worldSnapshot);
 		}
 
 		float variationFactor = Config.occlusionVariation;
@@ -431,7 +443,7 @@ public class SoundPhysics {
 			variationFactor = Math.max(variationFactor, 0.49f);
 		}
 
-		float minOcclusion = runOcclusion(soundPos, playerPos);
+		float minOcclusion = runOcclusion(soundPos, playerPos, worldSnapshot);
 
 		if (variationFactor <= 0.0f) {
 			return minOcclusion;
@@ -448,7 +460,8 @@ public class SoundPhysics {
 
 					final float occlusion = runOcclusion(
 							soundPos.add(offset),
-							playerPos.add(offset)
+							playerPos.add(offset),
+							worldSnapshot
 					);
 
 					minOcclusion = Math.min(minOcclusion, occlusion);
@@ -466,10 +479,11 @@ public class SoundPhysics {
 	 * Minecraft 1.12.2 does not have all modern sound types, so unavailable
 	 * block categories are intentionally not included here.
 	 */
-	private static float getBlockOcclusion(final BlockPos blockPos, final EnumFacing sideHit) {
-		final IBlockState blockState = mc.world.getBlockState(blockPos);
+	private static float getBlockOcclusion(final BlockPos blockPos, final EnumFacing sideHit,
+										   final ClientWorldSnapshot worldSnapshot) {
+		final IBlockState blockState = worldSnapshot.getBlockState(blockPos);
 		final Block block = blockState.getBlock();
-		final IBlockState actualState = block.getActualState(blockState, mc.world, blockPos);
+		final IBlockState actualState = blockState;
 		final Material material = actualState.getMaterial();
 
 		// Special block overrides from the modern occlusion configuration.
@@ -484,7 +498,7 @@ public class SoundPhysics {
 		} else if (material == Material.LAVA) {
 			blockOcclusion = 0.75f;
 		} else {
-			final SoundType soundType = block.getSoundType(actualState, mc.world, blockPos, mc.player);
+			final SoundType soundType = block.getSoundType();
 
 			if (soundType == SoundType.CLOTH) {
 				// Modern SoundType.WOOL equivalent in 1.12.2.
@@ -503,7 +517,7 @@ public class SoundPhysics {
 		}
 
 		// Apply a separate factor when the ray hits a face that is not solid.
-		if (!block.isSideSolid(actualState, mc.world, blockPos, sideHit)) {
+		if (!block.isSideSolid(actualState, worldSnapshot, blockPos, sideHit)) {
 			blockOcclusion *= Config.nonFullBlockOcclusionFactor;
 		}
 
@@ -514,7 +528,8 @@ public class SoundPhysics {
 	 * Traces one path from the sound source to the listener and accumulates
 	 * the occlusion contribution of every block intersected by that path.
 	 */
-	private static float runOcclusion(final Vec3d soundPos, final Vec3d playerPos) {
+	private static float runOcclusion(final Vec3d soundPos, final Vec3d playerPos,
+									  final ClientWorldSnapshot worldSnapshot) {
 		if (Config.maxOcclusion <= 0.0f) {
 			return 0.0f;
 		}
@@ -524,14 +539,14 @@ public class SoundPhysics {
 		float occlusionAccumulation = 0.0f;
 
 		for (int i = 0; i < Config.maxOcclusionRays; i++) {
-			final RayTraceResult rayHit = mc.world.rayTraceBlocks(rayOrigin, playerPos, true);
+			final RayTraceResult rayHit = worldSnapshot.rayTraceBlocks(rayOrigin, playerPos, true);
 
 			if (rayHit == null) {
 				break;
 			}
 
 			final BlockPos blockPos = rayHit.getBlockPos();
-			occlusionAccumulation += getBlockOcclusion(blockPos, rayHit.sideHit);
+			occlusionAccumulation += getBlockOcclusion(blockPos, rayHit.sideHit, worldSnapshot);
 
 			if (occlusionAccumulation >= Config.maxOcclusion) {
 				return Config.maxOcclusion;
@@ -551,7 +566,10 @@ public class SoundPhysics {
 	private static void evaluateEnvironment(final int sourceID, final float posX, final float posY, final float posZ, final SoundCategory category,
 											final String name, ISound.AttenuationType attType) {
 		try {
-			if (mc.player == null || mc.world == null || category == SoundCategory.MASTER || attType == ISound.AttenuationType.NONE ||
+			final ClientWorldSnapshot worldSnapshot = ClientWorldSnapshotManager.getSnapshot();
+
+			if (mc.player == null || mc.world == null || worldSnapshot == null ||
+					category == SoundCategory.MASTER || attType == ISound.AttenuationType.NONE ||
 					category == SoundCategory.RECORDS || category == SoundCategory.MUSIC) {
 				// posY <= 0 as a condition has to be there: Ingame
 				// menu clicks do have a player and world present
@@ -571,23 +589,23 @@ public class SoundPhysics {
 			final float absorptionCoeff = Config.globalBlockAbsorption * 3.0f;
 
 			final Vec3d playerPos = new Vec3d(mc.player.posX, mc.player.posY + getPlayerEyeHeight(), mc.player.posZ);
-			final Vec3d soundPos = offsetSoundByName(posX, posY, posZ, playerPos, name, category);
+			final Vec3d soundPos = offsetSoundByName(posX, posY, posZ, playerPos, name, category, worldSnapshot);
 
 			float airAbsorptionFactor = 1.0f;
 
-			if (Config.snowAirAbsorptionFactor > 1.0f && mc.world.isRaining()) {
+			if (Config.snowAirAbsorptionFactor > 1.0f && worldSnapshot.isRaining()) {
 				final Vec3d middlePos = playerPos.add(soundPos).scale(0.5);
 				final BlockPos playerPosBlock = new BlockPos(playerPos);
 				final BlockPos soundPosBlock = new BlockPos(soundPos);
 				final BlockPos middlePosBlock = new BlockPos(middlePos);
-				final int snowingPlayer = isSnowingAt(playerPosBlock,false) ? 1 : 0;
-				final int snowingSound = isSnowingAt(soundPosBlock,false) ? 1 : 0;
-				final int snowingMiddle = isSnowingAt(middlePosBlock,false) ? 1 : 0;
+				final int snowingPlayer = isSnowingAt(playerPosBlock,false,worldSnapshot) ? 1 : 0;
+				final int snowingSound = isSnowingAt(soundPosBlock,false,worldSnapshot) ? 1 : 0;
+				final int snowingMiddle = isSnowingAt(middlePosBlock,false,worldSnapshot) ? 1 : 0;
 				final float snowFactor = snowingPlayer * 0.25f + snowingMiddle * 0.5f + snowingSound * 0.25f;
-				airAbsorptionFactor = Math.max(Config.snowAirAbsorptionFactor*mc.world.getRainStrength(1.0f)*snowFactor,airAbsorptionFactor);
+				airAbsorptionFactor = Math.max(Config.snowAirAbsorptionFactor*worldSnapshot.getRainStrength()*snowFactor,airAbsorptionFactor);
 			}
 
-			final float occlusionAccumulation = calculateOcclusion(soundPos, playerPos, category, name);
+			final float occlusionAccumulation = calculateOcclusion(soundPos, playerPos, category, name, worldSnapshot);
 
 			directCutoff = (float) Math.exp(-occlusionAccumulation * absorptionCoeff);
 			float directGain = (float) Math.pow(directCutoff, 0.1);
@@ -603,7 +621,7 @@ public class SoundPhysics {
 			float sendCutoff2 = 1.0f;
 			float sendCutoff3 = 1.0f;
 
-			if (isInsideOfMaterial(Material.WATER)) {
+			if (isPlayerInsideOfMaterial(Material.WATER, worldSnapshot)) {
 				directCutoff *= 1.0f - Config.underwaterFilter;
 			}
 
@@ -641,7 +659,7 @@ public class SoundPhysics {
 				final Vec3d rayEnd = new Vec3d(rayStart.x + rayDir.x * maxDistance, rayStart.y + rayDir.y * maxDistance,
 						rayStart.z + rayDir.z * maxDistance);
 
-				final RayTraceResult rayHit = mc.world.rayTraceBlocks(rayStart, rayEnd, true);
+				final RayTraceResult rayHit = worldSnapshot.rayTraceBlocks(rayStart, rayEnd, true);
 
 				if (rayHit != null) {
 					final double rayLength = soundPos.distanceTo(rayHit.hitVec);
@@ -663,10 +681,10 @@ public class SoundPhysics {
 						final Vec3d newRayEnd = new Vec3d(newRayStart.x + newRayDir.x * maxDistance,
 								newRayStart.y + newRayDir.y * maxDistance, newRayStart.z + newRayDir.z * maxDistance);
 
-						final RayTraceResult newRayHit = mc.world.rayTraceBlocks(newRayStart, newRayEnd, true);
+						final RayTraceResult newRayHit = worldSnapshot.rayTraceBlocks(newRayStart, newRayEnd, true);
 
 						float energyTowardsPlayer = 0.25f;
-						final float blockReflectivity = getBlockReflectivity(lastHitBlock);
+						final float blockReflectivity = getBlockReflectivity(lastHitBlock, worldSnapshot);
 						energyTowardsPlayer *= blockReflectivity * 0.75f + 0.25f;
 
 						if (newRayHit == null) {
@@ -690,7 +708,7 @@ public class SoundPhysics {
 								final Vec3d finalRayStart = new Vec3d(lastHitPos.x + lastHitNormal.x * 0.01,
 										lastHitPos.y + lastHitNormal.y * 0.01, lastHitPos.z + lastHitNormal.z * 0.01);
 
-								final RayTraceResult finalRayHit = mc.world.rayTraceBlocks(finalRayStart, playerPos, true);
+								final RayTraceResult finalRayHit = worldSnapshot.rayTraceBlocks(finalRayStart, playerPos, true);
 
 								if (finalRayHit == null) {
 									// log("Secondary ray hit the player!");
@@ -771,7 +789,7 @@ public class SoundPhysics {
 			sendGain2 *= (float) Math.pow(sendCutoff2, 0.1);
 			sendGain3 *= (float) Math.pow(sendCutoff3, 0.1);
 
-			if (mc.player.isInWater()) {
+			if (isPlayerInsideOfMaterial(Material.WATER, worldSnapshot)) {
 				sendCutoff0 *= 0.4f;
 				sendCutoff1 *= 0.4f;
 				sendCutoff2 *= 0.4f;
