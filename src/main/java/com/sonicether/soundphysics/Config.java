@@ -252,7 +252,7 @@ public class Config {
 				0.8f,
 				0.0f,
 				1.0f,
-				"How much sound is filtered when the player is underwater. 0.0 means no filter. 1.0 means fully filtered."
+				"How much sound is filtered when the listener or sound source is underwater. 0.0 means no filter. 1.0 means fully filtered"
 		);
 
 		noteBlockEnable = this.forgeConfig.getBoolean(

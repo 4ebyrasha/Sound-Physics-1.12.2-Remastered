@@ -571,6 +571,23 @@ public class SoundPhysics {
 		return worldSnapshot.getBlockState(eyePos).getMaterial() == material;
 	}
 
+	private static boolean isListenerOrSourceUnderwater(
+			final double sourceX,
+			final double sourceY,
+			final double sourceZ,
+			final ClientWorldSnapshot worldSnapshot
+	) {
+		if (isPlayerInsideOfMaterial(Material.WATER, worldSnapshot)) {
+			return true;
+		}
+
+		final BlockPos sourceBlockPos =
+				new BlockPos(sourceX, sourceY, sourceZ);
+
+		return worldSnapshot.getBlockState(sourceBlockPos).getMaterial()
+				== Material.WATER;
+	}
+
 	@SuppressWarnings("deprecation")
 	private static float getBlockReflectivity(
 			final BlockPos blockPos,
@@ -1213,7 +1230,12 @@ public class SoundPhysics {
 			float sendCutoff2 = 1.0f;
 			float sendCutoff3 = 1.0f;
 
-			if (isPlayerInsideOfMaterial(Material.WATER, worldSnapshot)) {
+			if (isListenerOrSourceUnderwater(
+					posX,
+					posY,
+					posZ,
+					worldSnapshot
+			)) {
 				directCutoff *= 1.0f - Config.underwaterFilter;
 			}
 
@@ -1679,9 +1701,12 @@ public class SoundPhysics {
 					1.0f
 			);
 
-			// Underwater reverb filtering.
-			if (isPlayerInsideOfMaterial(Material.WATER, worldSnapshot)) {
-
+			if (isListenerOrSourceUnderwater(
+					posX,
+					posY,
+					posZ,
+					worldSnapshot
+			)) {
 				sendCutoff0 *= 0.4f;
 				sendCutoff1 *= 0.4f;
 				sendCutoff2 *= 0.4f;
