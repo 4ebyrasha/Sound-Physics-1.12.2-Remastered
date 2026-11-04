@@ -65,7 +65,9 @@ public class SoundPhysics {
 	@Mod.EventHandler
 	public void preInit(final FMLPreInitializationEvent event) {
 		Config.instance.preInit(event);
+
 		ClientWorldSnapshotManager.register();
+		SoundRateManager.register();
 		SoundDirectionDebug.register();
 	}
 
@@ -249,9 +251,55 @@ public class SoundPhysics {
 	/**
 	 * CALLED BY ASM INJECTED CODE!
 	 */
-	public static void onPlaySound(final float posX, final float posY, final float posZ, final int sourceID, SoundCategory soundCat, String soundName, ISound.AttenuationType attType) {
-		//log(String.valueOf(posX)+" "+String.valueOf(posY)+" "+String.valueOf(posZ)+" - "+String.valueOf(sourceID)+" - "+soundCat.toString()+" - "+attType.toString()+" - "+soundName);
-		evaluateEnvironment(sourceID, posX, posY, posZ, soundCat, soundName, attType);
+	public static void onPlaySound(
+			final float posX,
+			final float posY,
+			final float posZ,
+			final int sourceID,
+			SoundCategory soundCat,
+			String soundName,
+			ISound.AttenuationType attType
+	) {
+		if (mc != null &&
+				mc.player != null &&
+				mc.world != null &&
+				ClientWorldSnapshotManager.getSnapshot() != null &&
+				soundCat != null &&
+				soundCat != SoundCategory.MASTER &&
+				soundCat != SoundCategory.RECORDS &&
+				soundCat != SoundCategory.MUSIC &&
+				attType != null &&
+				attType != ISound.AttenuationType.NONE &&
+				SoundRateManager.shouldSkip(soundName)) {
+
+			// Keep the original sound playing without acoustic effects
+			setEnvironment(
+					sourceID,
+					0.0f,
+					0.0f,
+					0.0f,
+					0.0f,
+					1.0f,
+					1.0f,
+					1.0f,
+					1.0f,
+					1.0f,
+					1.0f,
+					1.0f
+			);
+
+			return;
+		}
+
+		evaluateEnvironment(
+				sourceID,
+				posX,
+				posY,
+				posZ,
+				soundCat,
+				soundName,
+				attType
+		);
 	}
 
 	/**

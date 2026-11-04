@@ -46,6 +46,7 @@ public class Config {
 	public static float nonFullBlockOcclusionFactor;
 	public static int maxOcclusionRays;
 	public static float maxOcclusion;
+	public static String[] soundRateLimits;
 
 	// block properties
 	public static float stoneReflectivity;
@@ -282,6 +283,23 @@ public class Config {
 				false,
 				"If true, only one path between the sound source and the listener is used instead of nine"
 		);
+
+		soundRateLimits = this.forgeConfig.getStringList(
+				"Sound Rate Limits",
+				categoryPerformance,
+				new String[]{
+						"minecraft:weather.rain=0",
+						"minecraft:weather.rain.above=0",
+						"minecraft:entity.lightning.thunder=0"
+				},
+				"Maximum acoustic evaluations per sound event per client tick. " +
+						"Format: sound_event_id=limit. " +
+						"-1 means unlimited, 0 disables acoustic processing, " +
+						"and positive values limit the number of evaluations. " +
+						"This does not disable actual sound playback."
+		);
+
+		SoundRateManager.configure(soundRateLimits);
 
 		occlusionVariation = this.forgeConfig.getFloat(
 				"Occlusion Variation",
