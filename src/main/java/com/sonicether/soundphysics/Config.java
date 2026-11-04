@@ -19,6 +19,8 @@ public class Config {
 	private Configuration forgeConfig;
 
 	// general
+	public static float reverbAttenuationDistance;
+	public static float reverbDistance;
 	public static boolean soundDirectionEvaluation;
 	public static boolean redirectNonOccludedSounds;
 	public static float rolloffFactor;
@@ -127,6 +129,27 @@ public class Config {
 		list.add(new ConfigElement(this.forgeConfig.getCategory(categoryMisc)));
 
 		return list;
+	}
+
+	private void syncReverbConfig() {
+
+		reverbAttenuationDistance = this.forgeConfig.getFloat(
+				"Reverb Attenuation Distance",
+				categoryGeneral,
+				0.0f,
+				0.0f,
+				8192.0f,
+				"Minimum reflected acoustic path length required for reverb generation. Set to 0 to disable."
+		);
+
+		reverbDistance = this.forgeConfig.getFloat(
+				"Reverb Distance",
+				categoryGeneral,
+				96.0f,
+				0.0f,
+				8192.0f,
+				"Distance in blocks at which reverb send gain reaches zero. Set to 0 to disable distance attenuation."
+		);
 	}
 
 	private void syncConfig() {
@@ -509,7 +532,7 @@ public class Config {
 		);
 
 
-
+		syncReverbConfig();
 		SoundPhysics.applyConfigChanges();
 
 		if (this.forgeConfig.hasChanged()) {
