@@ -36,6 +36,11 @@ import java.nio.IntBuffer;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.regex.Pattern;
 
+import net.minecraft.block.BlockDoor;
+import net.minecraft.block.BlockFenceGate;
+import net.minecraft.block.BlockTrapDoor;
+import net.minecraft.block.state.IBlockState;
+
 
 @Mod(modid = SoundPhysics.modid, clientSideOnly = true, acceptedMinecraftVersions = SoundPhysics.mcVersion, version = Tags.VERSION, guiFactory = "com.sonicether.soundphysics.SPGuiFactory")
 public class SoundPhysics {
@@ -474,21 +479,43 @@ public class SoundPhysics {
 
 	/**
 	 * Returns the occlusion contribution of a block.
-	 *
-	 * The values follow the block sound-type defaults from the modern version.
-	 * Minecraft 1.12.2 does not have all modern sound types, so unavailable
-	 * block categories are intentionally not included here.
+	 * Door-like blocks are handled according to their open state:
+	 * closed doors obstruct sound, while open doors and gates contribute
+	 * no additional occlusion.
 	 */
-	private static float getBlockOcclusion(final BlockPos blockPos, final EnumFacing sideHit,
+	private static float getBlockOcclusion(final BlockPos blockPos,
+										   final EnumFacing sideHit,
 										   final ClientWorldSnapshot worldSnapshot) {
 		final IBlockState blockState = worldSnapshot.getBlockState(blockPos);
 		final Block block = blockState.getBlock();
-		final IBlockState actualState = blockState;
-		final Material material = actualState.getMaterial();
+		final Material material = blockState.getMaterial();
 
-		// Special block overrides from the modern occlusion configuration.
 		if (block == Blocks.JUKEBOX) {
 			return 0.0f;
+		}
+
+		if (block instanceof BlockDoor) {
+			if (blockState.getValue(BlockDoor.OPEN)) {
+				return 0.0f;
+			}
+
+			return 2.0f;
+		}
+
+		if (block instanceof BlockFenceGate) {
+			if (blockState.getValue(BlockFenceGate.OPEN)) {
+				return 0.0f;
+			}
+
+			return 1.5f;
+		}
+		
+		if (block instanceof BlockTrapDoor) {
+			if (blockState.getValue(BlockTrapDoor.OPEN)) {
+				return 0.0f;
+			}
+
+			return 1.5f;
 		}
 
 		float blockOcclusion;
@@ -501,23 +528,20 @@ public class SoundPhysics {
 			final SoundType soundType = block.getSoundType();
 
 			if (soundType == SoundType.CLOTH) {
-				// Modern SoundType.WOOL equivalent in 1.12.2.
 				blockOcclusion = 1.5f;
 			} else if (soundType == SoundType.GLASS) {
 				blockOcclusion = 0.1f;
 			} else if (soundType == SoundType.SNOW) {
 				blockOcclusion = 0.1f;
-			} else if (soundType == SoundType.PLANT) {
-				blockOcclusion = 0.0f;
-			} else if (soundType == SoundType.LADDER) {
+			} else if (soundType == SoundType.PLANT
+					|| soundType == SoundType.LADDER) {
 				blockOcclusion = 0.0f;
 			} else {
 				blockOcclusion = Config.defaultBlockOcclusionFactor;
 			}
 		}
 
-		// Apply a separate factor when the ray hits a face that is not solid.
-		if (!block.isSideSolid(actualState, worldSnapshot, blockPos, sideHit)) {
+		if (!block.isSideSolid(blockState, worldSnapshot, blockPos, sideHit)) {
 			blockOcclusion *= Config.nonFullBlockOcclusionFactor;
 		}
 
