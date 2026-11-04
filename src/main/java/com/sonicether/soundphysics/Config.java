@@ -19,6 +19,8 @@ public class Config {
 	private Configuration forgeConfig;
 
 	// general
+	public static boolean soundDirectionEvaluation;
+	public static boolean redirectNonOccludedSounds;
 	public static float rolloffFactor;
 	public static float globalReverbGain;
 	public static float globalVolumeMultiplier;
@@ -63,6 +65,7 @@ public class Config {
 	// misc
 	public static boolean autoSteroDownmixLogging;
 	public static boolean injectorLogging;
+	public static boolean debugSoundDirection;
 
 	private static final String categoryGeneral = "General";
 	private static final String categoryPerformance = "Performance";
@@ -257,6 +260,20 @@ public class Config {
 				"The global volume multiplier of the echos, put to 0 to disable echos all together"
 		);
 
+		soundDirectionEvaluation = this.forgeConfig.getBoolean(
+				"Sound Direction Evaluation",
+				categoryGeneral,
+				true,
+				"If true, calculates the apparent sound direction based on reflected sound paths"
+		);
+
+		redirectNonOccludedSounds = this.forgeConfig.getBoolean(
+				"Skip Redirecting Non-Occluded Sounds",
+				categoryGeneral,
+				true,
+				"If true, sounds with a direct unobstructed path will not have their positions redirected"
+		);
+
 
 		// Performance
 		strictOcclusion = this.forgeConfig.getBoolean(
@@ -447,6 +464,15 @@ public class Config {
 				false,
 				"If true, Logs debug info about the injector"
 		);
+
+		debugSoundDirection = this.forgeConfig.getBoolean(
+				"Debug Sound Direction",
+				categoryMisc,
+				false,
+				"Renders sound direction rays, reflections, visible paths and the calculated apparent sound position in the world"
+		);
+
+
 
 		SoundPhysics.applyConfigChanges();
 

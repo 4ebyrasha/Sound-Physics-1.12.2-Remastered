@@ -29,6 +29,7 @@ import org.lwjgl.BufferUtils;
 import org.lwjgl.openal.*;
 import paulscode.sound.*;
 
+import javax.annotation.Nullable;
 import javax.sound.sampled.AudioFormat;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -39,7 +40,6 @@ import java.util.regex.Pattern;
 import net.minecraft.block.BlockDoor;
 import net.minecraft.block.BlockFenceGate;
 import net.minecraft.block.BlockTrapDoor;
-import net.minecraft.block.state.IBlockState;
 
 
 @Mod(modid = SoundPhysics.modid, clientSideOnly = true, acceptedMinecraftVersions = SoundPhysics.mcVersion, version = Tags.VERSION, guiFactory = "com.sonicether.soundphysics.SPGuiFactory")
@@ -66,6 +66,7 @@ public class SoundPhysics {
 	public void preInit(final FMLPreInitializationEvent event) {
 		Config.instance.preInit(event);
 		ClientWorldSnapshotManager.register();
+		SoundDirectionDebug.register();
 	}
 
 	@Mod.EventHandler
@@ -364,6 +365,145 @@ public class SoundPhysics {
 		return new Vec3d(sideHit.getDirectionVec());
 	}
 
+	/**
+	 * Checks whether a position shares unobstructed airspace with the listener.
+	 * <p>
+	 * Missing chunk data is treated as unknown, not as open air.
+	 */
+	@Nullable
+	private static Vec3d getSharedAirspace(
+			Vec3d soundPosition,
+			Vec3d listenerPosition,
+			ClientWorldSnapshot worldSnapshot
+	) {
+		return getSharedAirspace(
+				soundPosition,
+				listenerPosition,
+				worldSnapshot,
+				null,
+				SoundDirectionDebug.COLOR_VALID
+		);
+	}
+
+	/**
+	 * Checks whether a position shares unobstructed airspace with the listener
+	 * and optionally records the tested path for the direction debug overlay.
+	 */
+	@Nullable
+	private static Vec3d getSharedAirspace(
+			Vec3d soundPosition,
+			Vec3d listenerPosition,
+			ClientWorldSnapshot worldSnapshot,
+			SoundDirectionDebug.Builder debug,
+			int clearColor
+	) {
+		if (worldSnapshot == null) {
+			return null;
+		}
+
+		if (!worldSnapshot.hasChunkCoverage(soundPosition, listenerPosition)) {
+			if (debug != null) {
+				debug.addLine(
+						soundPosition,
+						listenerPosition,
+						SoundDirectionDebug.COLOR_UNKNOWN
+				);
+			}
+			return null;
+		}
+
+		final RayTraceResult hit = worldSnapshot.rayTraceBlocks(
+				soundPosition,
+				listenerPosition,
+				true
+		);
+
+		if (hit == null) {
+			if (debug != null) {
+				debug.addLine(soundPosition, listenerPosition, clearColor);
+			}
+			return soundPosition.subtract(listenerPosition);
+		}
+
+		if (debug != null) {
+			debug.addLine(
+					soundPosition,
+					hit.hitVec,
+					SoundDirectionDebug.COLOR_BLOCKED
+			);
+		}
+
+		return null;
+	}
+
+	/**
+	 * Checks shared airspace starting from a block reflection point.
+	 * <p>
+	 * The ray is slightly offset along the surface normal to avoid
+	 * immediately colliding with the same block.
+	 */
+	@Nullable
+	private static Vec3d getSharedAirspace(
+			RayTraceResult hit,
+			Vec3d listenerPosition,
+			ClientWorldSnapshot worldSnapshot
+	) {
+		return getSharedAirspace(
+				hit,
+				listenerPosition,
+				worldSnapshot,
+				null
+		);
+	}
+
+	/**
+	 * Checks shared airspace starting from a block reflection point and
+	 * optionally records the tested path for the direction debug overlay.
+	 */
+	@Nullable
+	private static Vec3d getSharedAirspace(
+			RayTraceResult hit,
+			Vec3d listenerPosition,
+			ClientWorldSnapshot worldSnapshot,
+			SoundDirectionDebug.Builder debug
+	) {
+		if (hit == null || hit.sideHit == null || hit.hitVec == null) {
+			return null;
+		}
+
+		final Vec3d normal = getNormalFromFacing(hit.sideHit);
+
+		final Vec3d rayStart = hit.hitVec.add(
+				normal.x * 0.01D,
+				normal.y * 0.01D,
+				normal.z * 0.01D
+		);
+
+		return getSharedAirspace(
+				rayStart,
+				listenerPosition,
+				worldSnapshot,
+				debug,
+				SoundDirectionDebug.COLOR_VALID
+		);
+	}
+
+	/**
+	 * Changes the actual OpenAL source position.
+	 */
+	private static void setSoundPos(
+			int sourceID,
+			Vec3d position
+	) {
+		AL10.alSource3f(
+				sourceID,
+				AL10.AL_POSITION,
+				(float) position.x,
+				(float) position.y,
+				(float) position.z
+		);
+	}
+
 	private static Vec3d reflect(final Vec3d dir, final Vec3d normal) {
 		final double dot2 = dir.dotProduct(normal) * 2;
 
@@ -509,7 +649,7 @@ public class SoundPhysics {
 
 			return 1.5f;
 		}
-		
+
 		if (block instanceof BlockTrapDoor) {
 			if (blockState.getValue(BlockTrapDoor.OPEN)) {
 				return 0.0f;
@@ -586,7 +726,6 @@ public class SoundPhysics {
 		return Math.min(occlusionAccumulation, Config.maxOcclusion);
 	}
 
-	@SuppressWarnings("deprecation")
 	private static void evaluateEnvironment(final int sourceID, final float posX, final float posY, final float posZ, final SoundCategory category,
 											final String name, ISound.AttenuationType attType) {
 		try {
@@ -614,6 +753,14 @@ public class SoundPhysics {
 
 			final Vec3d playerPos = new Vec3d(mc.player.posX, mc.player.posY + getPlayerEyeHeight(), mc.player.posZ);
 			final Vec3d soundPos = offsetSoundByName(posX, posY, posZ, playerPos, name, category, worldSnapshot);
+
+			final SoundDirectionDebug.Builder directionDebug =
+					SoundDirectionDebug.begin(
+							mc.world,
+							soundPos,
+							playerPos,
+							name
+					);
 
 			float airAbsorptionFactor = 1.0f;
 
@@ -667,6 +814,37 @@ public class SoundPhysics {
 
 			float sharedAirspace = 0.0f;
 
+			// Reflected sound direction evaluation
+			final ReflectedAudio reflectedAudio =
+					new ReflectedAudio(occlusionAccumulation);
+
+			// Check whether the original sound position has direct visibility.
+			// This also records whether the path is clear, blocked, or unknown
+			// because one or more chunks have not been loaded yet.
+			if (reflectedAudio.shouldEvaluateDirection()) {
+				final Vec3d directSharedAirspaceVector = getSharedAirspace(
+						soundPos,
+						playerPos,
+						worldSnapshot,
+						directionDebug,
+						SoundDirectionDebug.COLOR_DIRECT_CLEAR
+				);
+
+				if (directSharedAirspaceVector != null) {
+					reflectedAudio.addDirectAirspace(directSharedAirspaceVector);
+				}
+			} else if (Config.debugSoundDirection) {
+				// Keep the direct path visible in the debug overlay even when
+				// direction redirection is disabled for this sound.
+				getSharedAirspace(
+						soundPos,
+						playerPos,
+						worldSnapshot,
+						directionDebug,
+						SoundDirectionDebug.COLOR_DIRECT_CLEAR
+				);
+			}
+
 			final float rcpTotalRays = 1.0f / (numRays * rayBounces);
 			final float rcpPrimaryRays = 1.0f / numRays;
 
@@ -683,7 +861,24 @@ public class SoundPhysics {
 				final Vec3d rayEnd = new Vec3d(rayStart.x + rayDir.x * maxDistance, rayStart.y + rayDir.y * maxDistance,
 						rayStart.z + rayDir.z * maxDistance);
 
+				final boolean rayCoverage = worldSnapshot.hasChunkCoverage(rayStart, rayEnd);
 				final RayTraceResult rayHit = worldSnapshot.rayTraceBlocks(rayStart, rayEnd, true);
+
+				if (rayHit != null) {
+					directionDebug.addLine(
+							rayStart,
+							rayHit.hitVec,
+							SoundDirectionDebug.COLOR_PRIMARY
+					);
+				} else {
+					directionDebug.addLine(
+							rayStart,
+							rayEnd,
+							rayCoverage
+									? SoundDirectionDebug.COLOR_PRIMARY
+									: SoundDirectionDebug.COLOR_UNKNOWN
+					);
+				}
 
 				if (rayHit != null) {
 					final double rayLength = soundPos.distanceTo(rayHit.hitVec);
@@ -696,6 +891,23 @@ public class SoundPhysics {
 
 					float totalRayDistance = (float) rayLength;
 
+                /* Check whether the first reflection point has
+                    / an unobstructed path towards the listener
+                */
+					final Vec3d firstSharedAirspaceVector = getSharedAirspace(
+							rayHit,
+							playerPos,
+							worldSnapshot,
+							directionDebug
+					);
+
+					if (firstSharedAirspaceVector != null) {
+						reflectedAudio.addSharedAirspace(
+								firstSharedAirspaceVector,
+								totalRayDistance
+						);
+					}
+
 					// Secondary ray bounces
 					for (int j = 0; j < rayBounces; j++) {
 						final Vec3d newRayDir = reflect(lastRayDir, lastHitNormal);
@@ -705,7 +917,23 @@ public class SoundPhysics {
 						final Vec3d newRayEnd = new Vec3d(newRayStart.x + newRayDir.x * maxDistance,
 								newRayStart.y + newRayDir.y * maxDistance, newRayStart.z + newRayDir.z * maxDistance);
 
-						final RayTraceResult newRayHit = worldSnapshot.rayTraceBlocks(newRayStart, newRayEnd, true);
+						final boolean bounceCoverage = worldSnapshot.hasChunkCoverage(
+								newRayStart,
+								newRayEnd
+						);
+						final RayTraceResult newRayHit = worldSnapshot.rayTraceBlocks(
+								newRayStart,
+								newRayEnd,
+								true
+						);
+
+						directionDebug.addLine(
+								newRayStart,
+								newRayHit == null ? newRayEnd : newRayHit.hitVec,
+								newRayHit != null || bounceCoverage
+										? SoundDirectionDebug.COLOR_BOUNCE
+										: SoundDirectionDebug.COLOR_UNKNOWN
+						);
 
 						float energyTowardsPlayer = 0.25f;
 						final float blockReflectivity = getBlockReflectivity(lastHitBlock, worldSnapshot);
@@ -732,11 +960,22 @@ public class SoundPhysics {
 								final Vec3d finalRayStart = new Vec3d(lastHitPos.x + lastHitNormal.x * 0.01,
 										lastHitPos.y + lastHitNormal.y * 0.01, lastHitPos.z + lastHitNormal.z * 0.01);
 
-								final RayTraceResult finalRayHit = worldSnapshot.rayTraceBlocks(finalRayStart, playerPos, true);
+								final Vec3d sharedAirspaceVector = getSharedAirspace(
+										finalRayStart,
+										playerPos,
+										worldSnapshot,
+										directionDebug,
+										SoundDirectionDebug.COLOR_VALID
+								);
 
-								if (finalRayHit == null) {
-									// log("Secondary ray hit the player!");
+								if (sharedAirspaceVector != null) {
+
 									sharedAirspace += 1.0f;
+
+									reflectedAudio.addSharedAirspace(
+											sharedAirspaceVector,
+											totalRayDistance
+									);
 								}
 							}
 						}
@@ -761,6 +1000,33 @@ public class SoundPhysics {
 				}
 
 			}
+
+			// Calculate the apparent sound position using reflected paths
+			final Vec3d redirectedSoundPos = reflectedAudio.evaluateSoundPosition(
+					soundPos,
+					playerPos
+			);
+
+			if (redirectedSoundPos != null) {
+				setSoundPos(sourceID, redirectedSoundPos);
+			}
+
+			if (Config.debugSoundDirection) {
+				if (redirectedSoundPos != null) {
+					logger.info(
+							"[Sound Direction Debug] Original: {} | Redirected: {}",
+							soundPos,
+							redirectedSoundPos
+					);
+				} else {
+					logger.info(
+							"[Sound Direction Debug] No redirection. Source: {}",
+							soundPos
+					);
+				}
+			}
+
+			directionDebug.finish(redirectedSoundPos);
 
 			// log("total reflectivity ratio: " + totalReflectivityRatio);
 

@@ -39,7 +39,6 @@ import java.util.concurrent.atomic.AtomicIntegerArray;
  */
 public final class ClientWorldSnapshot implements IBlockAccess {
 
-    private static final int MAX_RAY_STEPS = 200;
 
     private final Map<Long, ChunkSnapshot> chunks;
     private final WorldType worldType;
@@ -97,6 +96,56 @@ public final class ClientWorldSnapshot implements IBlockAccess {
                 world.isRaining(),
                 world.getRainStrength(1.0f)
         );
+    }
+
+    /**
+     * Checks whether the chunk containing the specified position
+     * is available in this snapshot.
+     */
+    public boolean hasChunkAt(BlockPos pos) {
+        return getChunkSnapshot(
+                pos.getX() >> 4,
+                pos.getZ() >> 4
+        ) != null;
+    }
+
+    /**
+     * Checks whether the complete horizontal path is covered
+     * by cached chunks.
+     * <p>
+     * Missing chunks must not be treated as open air when
+     * calculating sound direction
+     */
+    public boolean hasChunkCoverage(
+            Vec3d start,
+            Vec3d end
+    ) {
+        double dx = end.x - start.x;
+        double dz = end.z - start.z;
+
+        int steps = Math.max(
+                1,
+                (int) Math.ceil(
+                        Math.max(Math.abs(dx), Math.abs(dz))
+                )
+        );
+
+        for (int i = 0; i <= steps; i++) {
+
+            double fraction = (double) i / steps;
+
+            BlockPos pos = new BlockPos(
+                    start.x + dx * fraction,
+                    start.y + (end.y - start.y) * fraction,
+                    start.z + dz * fraction
+            );
+
+            if (!hasChunkAt(pos)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static long chunkKey(int chunkX, int chunkZ) {
@@ -241,7 +290,13 @@ public final class ClientWorldSnapshot implements IBlockAccess {
         double tDeltaY = stepY == 0 ? Double.POSITIVE_INFINITY : Math.abs(1.0D / deltaY);
         double tDeltaZ = stepZ == 0 ? Double.POSITIVE_INFINITY : Math.abs(1.0D / deltaZ);
 
-        for (int steps = 0; steps < MAX_RAY_STEPS; steps++) {
+        final int maxSteps = (int) Math.ceil(
+                Math.abs(deltaX) +
+                        Math.abs(deltaY) +
+                        Math.abs(deltaZ)
+        ) + 3;
+
+        for (int steps = 0; steps < maxSteps; steps++) {
             if (x == endX && y == endY && z == endZ) {
                 return null;
             }
