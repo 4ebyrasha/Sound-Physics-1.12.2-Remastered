@@ -8,6 +8,7 @@
     "MixinEntity"
   ],
   "client": [
+    "MixinALContext",
     "MixinLibraryLWJGLOpenAL",
     "MixinSoundManager",
     "MixinSoundSystem",
