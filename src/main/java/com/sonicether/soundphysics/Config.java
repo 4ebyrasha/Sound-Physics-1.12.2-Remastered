@@ -38,6 +38,8 @@ public class Config {
 	public static float globalEchoMultiplier;
 
 	// performance
+	public static boolean updateMovingSounds;
+	public static int soundUpdateInterval;
 	public static boolean skipRainOcclusionTracing;
 	public static int environmentEvaluationRays;
 	public static boolean simplerSharedAirspaceSimulation;
@@ -277,6 +279,22 @@ public class Config {
 
 
 		// Performance
+		updateMovingSounds = this.forgeConfig.getBoolean(
+				"Update Moving Sounds",
+				categoryPerformance,
+				false,
+				"If true, moving and tickable sound sources will be periodically reevaluated by Sound Physics."
+		);
+
+		soundUpdateInterval = this.forgeConfig.getInt(
+				"Moving Sound Update Interval",
+				categoryPerformance,
+				5,
+				1,
+				200,
+				"Number of ticks between acoustic reevaluations of moving sound sources. Lower values increase processing frequency."
+		);
+
 		strictOcclusion = this.forgeConfig.getBoolean(
 				"Strict Occlusion",
 				categoryPerformance,

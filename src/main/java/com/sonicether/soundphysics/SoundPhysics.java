@@ -7,7 +7,7 @@ import net.minecraft.block.state.IBlockState;
 import net.minecraft.init.Blocks;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.audio.ISound;
-import net.minecraft.client.audio.MovingSound;
+import net.minecraft.client.audio.ITickableSound;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.item.EntityBoat;
 import net.minecraft.util.EnumFacing;
@@ -40,6 +40,9 @@ import java.util.regex.Pattern;
 import net.minecraft.block.BlockDoor;
 import net.minecraft.block.BlockFenceGate;
 import net.minecraft.block.BlockTrapDoor;
+
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 
 @Mod(modid = SoundPhysics.modid, clientSideOnly = true, acceptedMinecraftVersions = SoundPhysics.mcVersion, version = Tags.VERSION, guiFactory = "com.sonicether.soundphysics.SPGuiFactory")
@@ -96,6 +99,34 @@ public class SoundPhysics {
 	private static SoundCategory lastSoundCategory;
 	private static String lastSoundName;
 	private static ISound.AttenuationType lastSoundAtt;
+
+	private static final Map<String, SoundSourceData> SOUND_SOURCES =
+			new ConcurrentHashMap<>();
+
+	private static final class SoundSourceData {
+
+		private final SoundCategory category;
+		private final String soundName;
+		private final ISound.AttenuationType attenuationType;
+		private final boolean moving;
+
+		private volatile long lastEvaluationTick;
+		private volatile boolean acousticsEnabled;
+
+		private SoundSourceData(
+				SoundCategory category,
+				String soundName,
+				ISound.AttenuationType attenuationType,
+				boolean moving,
+				long lastEvaluationTick
+		) {
+			this.category = category;
+			this.soundName = soundName;
+			this.attenuationType = attenuationType;
+			this.moving = moving;
+			this.lastEvaluationTick = lastEvaluationTick;
+		}
+	}
 
 	// THESE VARIABLES ARE CONSTANTLY ACCESSED AND USED BY ASM INJECTED CODE! DO
 	// NOT REMOVE!
@@ -212,12 +243,45 @@ public class SoundPhysics {
 	/**
 	 * CALLED BY ASM INJECTED CODE!
 	 */
-	public static void setLastSound(final ISound snd, final SoundCategory sc, final ResourceLocation soundRes, final ResourceLocation eventRes) {
-		lastSoundName = eventRes.toString()+"|"+soundRes.getPath(); // Quick and dirty hack to check the event and sound name
-		lastSoundCategory = getSoundCategory(sc,lastSoundName);
+	public static void setLastSound(
+			final ISound snd,
+			final SoundCategory sc,
+			final ResourceLocation soundRes,
+			final ResourceLocation eventRes,
+			final String sourceName
+	) {
+		lastSoundName = eventRes.toString() + "|" + soundRes.getPath();
+
+		SoundCategory actualCategory = getSoundCategory(
+				sc,
+				lastSoundName
+		);
+
+		lastSoundCategory = actualCategory;
 		lastSoundAtt = snd.getAttenuationType();
-		if (snd instanceof MovingSound)               // Hacky fix until i properly do moving sounds (I'm currently thinking about how)
-			lastSoundCategory = SoundCategory.RECORDS;// because all (at least vanilla) moving sounds don't init their position when played
+
+		boolean moving = snd instanceof ITickableSound;
+
+		// Preserve the original behavior of the global volume
+		// multiplier and stereo downmix for moving sounds.
+		if (moving) {
+			lastSoundCategory = SoundCategory.RECORDS;
+		}
+
+		if (sourceName == null) {
+			return;
+		}
+
+		SOUND_SOURCES.put(
+				sourceName,
+				new SoundSourceData(
+						actualCategory,
+						lastSoundName,
+						snd.getAttenuationType(),
+						moving,
+						getCurrentWorldTime()
+				)
+		);
 	}
 
 	/**
@@ -260,34 +324,22 @@ public class SoundPhysics {
 			String soundName,
 			ISound.AttenuationType attType
 	) {
+		boolean eligibleForRateLimit =
+				soundCat != null &&
+						soundCat != SoundCategory.MASTER &&
+						soundCat != SoundCategory.MUSIC &&
+						(soundCat != SoundCategory.RECORDS || Config.updateMovingSounds) &&
+						attType != null &&
+						attType != ISound.AttenuationType.NONE;
+
 		if (mc != null &&
 				mc.player != null &&
 				mc.world != null &&
 				ClientWorldSnapshotManager.getSnapshot() != null &&
-				soundCat != null &&
-				soundCat != SoundCategory.MASTER &&
-				soundCat != SoundCategory.RECORDS &&
-				soundCat != SoundCategory.MUSIC &&
-				attType != null &&
-				attType != ISound.AttenuationType.NONE &&
+				eligibleForRateLimit &&
 				SoundRateManager.shouldSkip(soundName)) {
 
-			// Keep the original sound playing without acoustic effects
-			setEnvironment(
-					sourceID,
-					0.0f,
-					0.0f,
-					0.0f,
-					0.0f,
-					1.0f,
-					1.0f,
-					1.0f,
-					1.0f,
-					1.0f,
-					1.0f,
-					1.0f
-			);
-
+			setDefaultEnvironment(sourceID);
 			return;
 		}
 
@@ -363,6 +415,152 @@ public class SoundPhysics {
 			return worldSnapshot.canSnowAt(position) || worldSnapshot.getBiome(position).getEnableSnow();
 		}
 	}
+
+	private static long getCurrentWorldTime() {
+		if (mc == null || mc.world == null) {
+			return Long.MIN_VALUE;
+		}
+
+		return mc.world.getTotalWorldTime();
+	}
+
+	private static void setDefaultEnvironment(final int sourceID) {
+		setEnvironment(
+				sourceID,
+				0.0f,
+				0.0f,
+				0.0f,
+				0.0f,
+				1.0f,
+				1.0f,
+				1.0f,
+				1.0f,
+				1.0f,
+				1.0f,
+				1.0f
+		);
+	}
+
+	public static void onSoundSourceRemoved(String sourceName) {
+		if (sourceName != null) {
+			SOUND_SOURCES.remove(sourceName);
+		}
+	}
+
+	public static void clearSoundSources() {
+		SOUND_SOURCES.clear();
+	}
+
+	/**
+	 * Processes a sound using metadata belonging to its source.
+	 */
+	public static void onPlaySound(
+			String sourceName,
+			float posX,
+			float posY,
+			float posZ,
+			int sourceID
+	) {
+		SoundSourceData data = SOUND_SOURCES.get(sourceName);
+
+		if (data == null) {
+			// Compatibility fallback for external sounds.
+			onPlaySound(posX, posY, posZ, sourceID);
+			return;
+		}
+
+		data.lastEvaluationTick = getCurrentWorldTime();
+
+		if (data.moving && !Config.updateMovingSounds) {
+			data.acousticsEnabled = false;
+			setDefaultEnvironment(sourceID);
+			return;
+		}
+
+		onPlaySound(
+				posX,
+				posY,
+				posZ,
+				sourceID,
+				data.category,
+				data.soundName,
+				data.attenuationType
+		);
+
+		data.acousticsEnabled = data.moving && Config.updateMovingSounds;
+	}
+
+	/**
+	 * Reevaluates a moving sound source periodically.
+	 */
+	public static void onMovingSoundPosition(
+			String sourceName,
+			float posX,
+			float posY,
+			float posZ,
+			int sourceID
+	) {
+		SoundSourceData data = SOUND_SOURCES.get(sourceName);
+
+		if (data == null || !data.moving) {
+			return;
+		}
+
+		// When disabled, restore the original sound environment once.
+		if (!Config.updateMovingSounds) {
+			if (data.acousticsEnabled) {
+				setDefaultEnvironment(sourceID);
+				data.acousticsEnabled = false;
+			}
+
+			return;
+		}
+
+		if (mc == null || mc.world == null) {
+			return;
+		}
+
+		long currentTick = getCurrentWorldTime();
+
+		if (currentTick == Long.MIN_VALUE) {
+			return;
+		}
+
+		long lastTick = data.lastEvaluationTick;
+
+		int updateInterval = Math.max(
+				1,
+				Config.soundUpdateInterval
+		);
+
+		// Initialize or recover the timer after a world change.
+		if (lastTick == Long.MIN_VALUE || currentTick < lastTick) {
+			data.lastEvaluationTick = currentTick;
+			return;
+		}
+
+		if (currentTick - lastTick < updateInterval) {
+			return;
+		}
+
+		// Update before evaluation to prevent repeated processing
+		// if multiple position commands arrive during the same tick.
+		data.lastEvaluationTick = currentTick;
+
+		onPlaySound(
+				posX,
+				posY,
+				posZ,
+				sourceID,
+				data.category,
+				data.soundName,
+				data.attenuationType
+		);
+
+		data.acousticsEnabled = true;
+	}
+
+
 
 	private static boolean isPlayerInsideOfMaterial(final Material material, final ClientWorldSnapshot worldSnapshot) {
 		if (mc.player.getRidingEntity() instanceof EntityBoat) {
@@ -820,8 +1018,10 @@ public class SoundPhysics {
 			final ClientWorldSnapshot worldSnapshot = ClientWorldSnapshotManager.getSnapshot();
 
 			if (mc.player == null || mc.world == null || worldSnapshot == null ||
-					category == SoundCategory.MASTER || attType == ISound.AttenuationType.NONE ||
-					category == SoundCategory.RECORDS || category == SoundCategory.MUSIC) {
+					category == SoundCategory.MASTER ||
+					attType == ISound.AttenuationType.NONE ||
+					(category == SoundCategory.RECORDS && !Config.updateMovingSounds) ||
+					category == SoundCategory.MUSIC) {
 				// posY <= 0 as a condition has to be there: Ingame
 				// menu clicks do have a player and world present
 				// The Y position check has been removed due to problems with Cubic Chunks

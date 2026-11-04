@@ -27,7 +27,7 @@ public class MixinSoundManager {
                     remap = false
             )
     )
-    private void injectPlaySoundinjectPlaySound(
+    private void injectPlaySound(
             ISound p_sound,
             CallbackInfo ci,
             SoundEventAccessor soundeventaccessor,
@@ -39,14 +39,15 @@ public class MixinSoundManager {
             float f1,
             float f2,
             boolean flag,
-            String s,
+            String sourceName,
             ResourceLocation resourcelocation1
     ) {
         SoundPhysics.setLastSound(
                 p_sound,
                 soundcategory,
                 sound.getSoundLocation(),
-                resourcelocation
+                resourcelocation,
+                sourceName
         );
     }
 
@@ -61,5 +62,13 @@ public class MixinSoundManager {
     )
     private float modifySetVolume(float value) {
         return SoundPhysics.applyGlobalVolumeMultiplier(value);
+    }
+
+    @Inject(
+            method = "stopAllSounds",
+            at = @At("TAIL")
+    )
+    private void clearSoundSources(CallbackInfo ci) {
+        SoundPhysics.clearSoundSources();
     }
 }
