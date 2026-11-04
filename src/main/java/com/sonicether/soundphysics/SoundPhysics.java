@@ -692,25 +692,61 @@ public class SoundPhysics {
 	 * Traces one path from the sound source to the listener and accumulates
 	 * the occlusion contribution of every block intersected by that path.
 	 */
-	private static float runOcclusion(final Vec3d soundPos, final Vec3d playerPos,
-									  final ClientWorldSnapshot worldSnapshot) {
+
+	private static float runOcclusion(
+			final Vec3d soundPos,
+			final Vec3d playerPos,
+			final ClientWorldSnapshot worldSnapshot
+	) {
 		if (Config.maxOcclusion <= 0.0f) {
 			return 0.0f;
 		}
 
-		final Vec3d normalToPlayer = playerPos.subtract(soundPos).normalize();
+		final Vec3d normalToPlayer =
+				playerPos.subtract(soundPos).normalize();
+
 		Vec3d rayOrigin = soundPos;
+
 		float occlusionAccumulation = 0.0f;
 
 		for (int i = 0; i < Config.maxOcclusionRays; i++) {
-			final RayTraceResult rayHit = worldSnapshot.rayTraceBlocks(rayOrigin, playerPos, true);
+
+			final RayTraceResult rayHit =
+					worldSnapshot.rayTraceBlocks(
+							rayOrigin,
+							playerPos,
+							true
+					);
 
 			if (rayHit == null) {
+
+				// Unobstructed remainder of the occlusion ray.
+				SoundDirectionDebug.addOcclusionRay(
+						mc.world,
+						rayOrigin,
+						playerPos,
+						SoundDirectionDebug.COLOR_VALID
+				);
+
 				break;
 			}
 
+			// Visualize the segment that intersects a block.
+			// Occlusion rays are rendered through walls.
+			SoundDirectionDebug.addOcclusionRay(
+					mc.world,
+					rayOrigin,
+					rayHit.hitVec,
+					SoundDirectionDebug.COLOR_BLOCKED
+			);
+
 			final BlockPos blockPos = rayHit.getBlockPos();
-			occlusionAccumulation += getBlockOcclusion(blockPos, rayHit.sideHit, worldSnapshot);
+
+			occlusionAccumulation += getBlockOcclusion(
+					blockPos,
+					rayHit.sideHit,
+					worldSnapshot
+			);
 
 			if (occlusionAccumulation >= Config.maxOcclusion) {
 				return Config.maxOcclusion;
@@ -723,8 +759,12 @@ public class SoundPhysics {
 			);
 		}
 
-		return Math.min(occlusionAccumulation, Config.maxOcclusion);
+		return Math.min(
+				occlusionAccumulation,
+				Config.maxOcclusion
+		);
 	}
+
 
 	private static void evaluateEnvironment(final int sourceID, final float posX, final float posY, final float posZ, final SoundCategory category,
 											final String name, ISound.AttenuationType attType) {

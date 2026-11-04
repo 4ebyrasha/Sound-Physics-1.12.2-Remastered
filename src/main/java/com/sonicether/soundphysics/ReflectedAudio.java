@@ -1,3 +1,4 @@
+
 package com.sonicether.soundphysics;
 
 import net.minecraft.util.math.Vec3d;
@@ -7,14 +8,11 @@ import java.util.List;
 
 /**
  * Calculates the apparent sound direction using reflected sound paths.
-
- * Instead of averaging every available direction, this implementation
- * selects the dominant angular cluster of reflected paths.
+ * <p>
+ * This implementation follows the original Sound Physics Remastered
+ * weighted directional averaging algorithm.
  */
 public final class ReflectedAudio {
-
-    private static final double DIRECTION_THRESHOLD =
-            Math.cos(Math.toRadians(30.0D));
 
     private static final double MIN_DIRECTION_LENGTH = 0.5D;
 
@@ -26,16 +24,27 @@ public final class ReflectedAudio {
 
     public ReflectedAudio(double occlusion) {
         this.occlusion = occlusion;
+
         this.airspaceDirections = new ArrayList<>();
     }
 
     public boolean shouldEvaluateDirection() {
         return Config.soundDirectionEvaluation &&
-                (occlusion > 0.0D || !Config.redirectNonOccludedSounds);
+                (occlusion > 0.0D ||
+                        !Config.redirectNonOccludedSounds);
     }
 
-    public void addDirectAirspace(Vec3d sharedAirspaceVector) {
-        if (!shouldEvaluateDirection() || sharedAirspaceVector == null) {
+    /**
+     * Registers the original unobstructed sound path.
+     * <p>
+     * The direct path contributes its normalized direction
+     * without an inverse-distance weight.
+     */
+    public void addDirectAirspace(
+            Vec3d sharedAirspaceVector
+    ) {
+        if (!shouldEvaluateDirection() ||
+                sharedAirspaceVector == null) {
             return;
         }
 
@@ -46,11 +55,22 @@ public final class ReflectedAudio {
         directDirection = sharedAirspaceVector;
     }
 
+    /**
+     * Registers a reflected path that shares unobstructed airspace
+     * with the listener.
+     * <p>
+     * totalRayDistance:
+     * Distance travelled before reaching the reflection point.
+     * <p>
+     * sharedAirspaceVector:
+     * Vector from the final reflection point to the listener.
+     */
     public void addSharedAirspace(
             Vec3d sharedAirspaceVector,
             double totalRayDistance
     ) {
-        if (!shouldEvaluateDirection() || sharedAirspaceVector == null) {
+        if (!shouldEvaluateDirection() ||
+                sharedAirspaceVector == null) {
             return;
         }
 
@@ -60,6 +80,7 @@ public final class ReflectedAudio {
             return;
         }
 
+        // Complete acoustic path length.
         double pathLength = totalRayDistance + vectorLength;
 
         if (pathLength <= 0.0D ||
@@ -77,12 +98,17 @@ public final class ReflectedAudio {
     }
 
     /**
-     * Selects the most supported direction cluster.
-
-     * Paths pointing in approximately the same direction are grouped.
-     * The group with the highest number of supporting paths wins.
-
-     * Within that group, shorter acoustic paths receive greater weight.
+     * Evaluates the apparent sound position.
+     * <p>
+     * Original Sound Physics Remastered algorithm:
+     * <p>
+     * 1. Initialize the direction sum with the normalized direct path.
+     * 2. Add every reflected direction.
+     * 3. Weight each reflected direction by 1 / distance^2.
+     * 4. Normalize the resulting vector.
+     * 5. Preserve the original source-to-listener distance.
+     * <p>
+     * No angular clustering or direction filtering is performed.
      */
     public Vec3d evaluateSoundPosition(
             Vec3d soundPos,
@@ -96,77 +122,44 @@ public final class ReflectedAudio {
             return null;
         }
 
-        // When a direct path exists and non-occluded sounds
-        // should not be redirected, retain the original position.
-        if (directDirection != null &&
-                Config.redirectNonOccludedSounds) {
-            return null;
+        Vec3d directionSum;
+
+        if (directDirection != null) {
+            directionSum = directDirection.normalize();
+        } else {
+            directionSum = Vec3d.ZERO;
         }
 
-        int bestClusterCount = 0;
-        double bestClusterWeight = -1.0D;
+        for (DirectionSample sample : airspaceDirections) {
 
-        Vec3d bestDirectionSum = Vec3d.ZERO;
+            double pathLength = sample.distance;
 
-        for (DirectionSample candidate : airspaceDirections) {
-
-            Vec3d candidateDirection =
-                    candidate.direction.normalize();
-
-            Vec3d directionSum = Vec3d.ZERO;
-
-            int clusterCount = 0;
-            double clusterWeight = 0.0D;
-
-            for (DirectionSample sample : airspaceDirections) {
-
-                Vec3d sampleDirection =
-                        sample.direction.normalize();
-
-                double dot = candidateDirection.dotProduct(
-                        sampleDirection
-                );
-
-                // Ignore paths belonging to another direction.
-                if (dot < DIRECTION_THRESHOLD) {
-                    continue;
-                }
-
-                double weight = 1.0D /
-                        (sample.distance * sample.distance);
-
-                directionSum = directionSum.add(
-                        sampleDirection.scale(weight)
-                );
-
-                clusterWeight += weight;
-                clusterCount++;
+            if (pathLength <= 0.0D) {
+                return null;
             }
 
-            // Prefer the direction supported by the most paths.
-            // If support is equal, prefer the stronger weighted cluster.
-            if (clusterCount > bestClusterCount ||
-                    (clusterCount == bestClusterCount &&
-                            clusterWeight > bestClusterWeight)) {
+            // Inverse-square distance weighting.
+            double weight = 1.0D /
+                    (pathLength * pathLength);
 
-                bestClusterCount = clusterCount;
-                bestClusterWeight = clusterWeight;
-                bestDirectionSum = directionSum;
-            }
+            Vec3d normalizedDirection =
+                    sample.direction.normalize();
+
+            directionSum = directionSum.add(
+                    normalizedDirection.scale(weight)
+            );
         }
 
-        if (bestClusterCount == 0) {
-            return null;
-        }
+        Vec3d normalized = directionSum.normalize();
 
-        Vec3d normalized = bestDirectionSum.normalize();
-
+        // Reject an almost-zero resulting direction.
         if (normalized.length() < MIN_DIRECTION_LENGTH) {
             return null;
         }
 
         // Preserve the original distance to the listener.
-        double originalDistance = soundPos.distanceTo(listenerPos);
+        double originalDistance =
+                soundPos.distanceTo(listenerPos);
 
         return listenerPos.add(
                 normalized.scale(originalDistance)
@@ -176,6 +169,7 @@ public final class ReflectedAudio {
     private static final class DirectionSample {
 
         private final Vec3d direction;
+
         private final double distance;
 
         private DirectionSample(
