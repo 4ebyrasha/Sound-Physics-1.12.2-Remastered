@@ -353,7 +353,15 @@ public final class ClientWorldSnapshot implements IBlockAccess {
             return null;
         }
 
-        AxisAlignedBB box = state.getBoundingBox(this, pos);
+        AxisAlignedBB box = state.getCollisionBoundingBox(this, pos);
+
+        if (box == null || box == Block.NULL_AABB) {
+            if (!state.getMaterial().isLiquid()) {
+                return null;
+            }
+
+            box = state.getBoundingBox(this, pos);
+        }
 
         if (box == null || box == Block.NULL_AABB) {
             return null;

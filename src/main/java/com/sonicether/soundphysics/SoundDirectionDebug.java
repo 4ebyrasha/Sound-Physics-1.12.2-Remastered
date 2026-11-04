@@ -332,6 +332,7 @@ public final class SoundDirectionDebug {
         }
     }
 
+
     @SubscribeEvent
     public void onRenderWorldLast(RenderWorldLastEvent event) {
 
@@ -339,7 +340,6 @@ public final class SoundDirectionDebug {
             synchronized (RAYS) {
                 RAYS.clear();
             }
-
             return;
         }
 
@@ -349,7 +349,6 @@ public final class SoundDirectionDebug {
             synchronized (RAYS) {
                 RAYS.clear();
             }
-
             return;
         }
 
@@ -361,42 +360,31 @@ public final class SoundDirectionDebug {
 
         final long currentTick = mc.world.getTotalWorldTime();
 
-        List<DebugRay> visibleRays =
-                new ArrayList<>();
+        List<DebugRay> visibleRays = new ArrayList<>();
 
         synchronized (RAYS) {
-
             Iterator<DebugRay> iterator = RAYS.iterator();
 
             while (iterator.hasNext()) {
-
                 DebugRay ray = iterator.next();
 
                 long age = currentTick - ray.createdAt;
 
-                // Remove rays belonging to another world.
-                if (ray.world != mc.world) {
+                if (ray.world != mc.world ||
+                        age < 0L ||
+                        age > RAY_LIFESPAN_TICKS) {
                     iterator.remove();
                     continue;
                 }
 
-                // Remove expired rays.
-                if (age < 0L || age > RAY_LIFESPAN_TICKS) {
-                    iterator.remove();
-                    continue;
-                }
-
-                // Keep only rays close enough to the camera.
-                if (!isWithinRenderDistance(
+                if (isWithinRenderDistance(
                         ray,
                         renderX,
                         renderY,
                         renderZ
                 )) {
-                    continue;
+                    visibleRays.add(ray);
                 }
-
-                visibleRays.add(ray);
             }
         }
 
@@ -404,13 +392,19 @@ public final class SoundDirectionDebug {
             return;
         }
 
+        // Save the active matrix mode.
+        final int previousMatrixMode =
+                GL11.glGetInteger(GL11.GL_MATRIX_MODE);
+
         GL11.glPushAttrib(GL11.GL_ALL_ATTRIB_BITS);
-        GlStateManager.pushMatrix();
+
+        // IMPORTANT: world coordinates must use MODELVIEW.
+        GL11.glMatrixMode(GL11.GL_MODELVIEW);
+        GL11.glPushMatrix();
 
         try {
-
-            // Translate the world relative to the render camera.
-            GlStateManager.translate(
+            // Translate world coordinates relative to the camera.
+            GL11.glTranslated(
                     -renderX,
                     -renderY,
                     -renderZ
@@ -426,43 +420,31 @@ public final class SoundDirectionDebug {
                     GL11.GL_ONE_MINUS_SRC_ALPHA
             );
 
-            // Never modify the world's depth buffer.
+            // Do not modify the world's depth buffer.
             GL11.glDepthMask(false);
 
             GL11.glLineWidth(2.0F);
 
-            /*
-             * PASS 1:
-             * Normal sound rays.
-             *
-             * Blocks correctly hide these lines.
-             */
+            // Normal rays: occluded by blocks.
             GL11.glEnable(GL11.GL_DEPTH_TEST);
 
-            drawRays(
-                    visibleRays,
-                    false
-            );
+            drawRays(visibleRays, false);
 
-            /*
-             * PASS 2:
-             * Occlusion rays.
-             *
-             * These lines are intentionally visible through blocks.
-             */
+            // Occlusion rays: visible through blocks.
             GL11.glDisable(GL11.GL_DEPTH_TEST);
 
-            drawRays(
-                    visibleRays,
-                    true
-            );
+            drawRays(visibleRays, true);
 
         } finally {
+            GL11.glMatrixMode(GL11.GL_MODELVIEW);
+            GL11.glPopMatrix();
 
-            GlStateManager.popMatrix();
             GL11.glPopAttrib();
+
+            GL11.glMatrixMode(previousMatrixMode);
         }
     }
+
 
     private static boolean isWithinRenderDistance(
             DebugRay ray,
