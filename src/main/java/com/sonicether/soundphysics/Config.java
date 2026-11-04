@@ -25,6 +25,7 @@ public class Config {
 	public static float globalReverbBrightness;
 	public static float soundDistanceAllowance;
 	public static float globalBlockAbsorption;
+	public static float defaultBlockOcclusionFactor;
 	public static float globalBlockReflectance;
 	public static float airAbsorption;
 	public static float snowAirAbsorptionFactor;
@@ -40,6 +41,9 @@ public class Config {
 	public static boolean simplerSharedAirspaceSimulation;
 	public static boolean strictOcclusion;
 	public static float occlusionVariation;
+	public static float nonFullBlockOcclusionFactor;
+	public static int maxOcclusionRays;
+	public static float maxOcclusion;
 
 	// block properties
 	public static float stoneReflectivity;
@@ -167,6 +171,15 @@ public class Config {
 				"The global amount of sound that will be absorbed when traveling through blocks."
 		);
 
+		defaultBlockOcclusionFactor = this.forgeConfig.getFloat(
+				"Default Block Occlusion Factor",
+				categoryGeneral,
+				1.0f,
+				0.0f,
+				10.0f,
+				"The default amount of occlusion contributed by a block when no material-specific value applies."
+		);
+
 		globalBlockReflectance = this.forgeConfig.getFloat(
 				"Global Block Reflectance",
 				categoryGeneral,
@@ -260,6 +273,33 @@ public class Config {
 				0.0f,
 				16.0f,
 				"Higher values mean smaller objects are less likely to occlude sounds. Set to 0 to disable variation for non-block sounds"
+		);
+
+		nonFullBlockOcclusionFactor = this.forgeConfig.getFloat(
+				"Non-Full Block Occlusion Factor",
+				categoryPerformance,
+				0.25f,
+				0.0f,
+				1.0f,
+				"If a ray hits a non-solid block face, its occlusion is multiplied by this value."
+		);
+
+		maxOcclusionRays = this.forgeConfig.getInt(
+				"Max Occlusion Rays",
+				categoryPerformance,
+				16,
+				1,
+				128,
+				"The maximum number of block intersections evaluated along each direct occlusion path."
+		);
+
+		maxOcclusion = this.forgeConfig.getFloat(
+				"Max Occlusion",
+				categoryPerformance,
+				64.0f,
+				0.0f,
+				1024.0f,
+				"The maximum accumulated block occlusion value. Higher values allow thicker walls to contribute to attenuation."
 		);
 
 		skipRainOcclusionTracing = this.forgeConfig.getBoolean(

@@ -3,6 +3,8 @@ package com.sonicether.soundphysics;
 import net.minecraft.block.Block;
 import net.minecraft.block.SoundType;
 import net.minecraft.block.material.Material;
+import net.minecraft.block.state.IBlockState;
+import net.minecraft.init.Blocks;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.audio.ISound;
 import net.minecraft.client.audio.MovingSound;
@@ -458,31 +460,82 @@ public class SoundPhysics {
 	}
 
 	/**
+	 * Returns the occlusion contribution of a block.
+	 *
+	 * The values follow the block sound-type defaults from the modern version.
+	 * Minecraft 1.12.2 does not have all modern sound types, so unavailable
+	 * block categories are intentionally not included here.
+	 */
+	private static float getBlockOcclusion(final BlockPos blockPos, final EnumFacing sideHit) {
+		final IBlockState blockState = mc.world.getBlockState(blockPos);
+		final Block block = blockState.getBlock();
+		final IBlockState actualState = block.getActualState(blockState, mc.world, blockPos);
+		final Material material = actualState.getMaterial();
+
+		// Special block overrides from the modern occlusion configuration.
+		if (block == Blocks.JUKEBOX) {
+			return 0.0f;
+		}
+
+		float blockOcclusion;
+
+		if (material == Material.WATER) {
+			blockOcclusion = 0.25f;
+		} else if (material == Material.LAVA) {
+			blockOcclusion = 0.75f;
+		} else {
+			final SoundType soundType = block.getSoundType(actualState, mc.world, blockPos, mc.player);
+
+			if (soundType == SoundType.CLOTH) {
+				// Modern SoundType.WOOL equivalent in 1.12.2.
+				blockOcclusion = 1.5f;
+			} else if (soundType == SoundType.GLASS) {
+				blockOcclusion = 0.1f;
+			} else if (soundType == SoundType.SNOW) {
+				blockOcclusion = 0.1f;
+			} else if (soundType == SoundType.PLANT) {
+				blockOcclusion = 0.0f;
+			} else if (soundType == SoundType.LADDER) {
+				blockOcclusion = 0.0f;
+			} else {
+				blockOcclusion = Config.defaultBlockOcclusionFactor;
+			}
+		}
+
+		// Apply a separate factor when the ray hits a face that is not solid.
+		if (!block.isSideSolid(actualState, mc.world, blockPos, sideHit)) {
+			blockOcclusion *= Config.nonFullBlockOcclusionFactor;
+		}
+
+		return blockOcclusion;
+	}
+
+	/**
 	 * Traces one path from the sound source to the listener and accumulates
 	 * the occlusion contribution of every block intersected by that path.
 	 */
 	private static float runOcclusion(final Vec3d soundPos, final Vec3d playerPos) {
+		if (Config.maxOcclusion <= 0.0f) {
+			return 0.0f;
+		}
+
 		final Vec3d normalToPlayer = playerPos.subtract(soundPos).normalize();
 		Vec3d rayOrigin = soundPos;
 		float occlusionAccumulation = 0.0f;
 
-		for (int i = 0; i < 10; i++) {
+		for (int i = 0; i < Config.maxOcclusionRays; i++) {
 			final RayTraceResult rayHit = mc.world.rayTraceBlocks(rayOrigin, playerPos, true);
 
 			if (rayHit == null) {
 				break;
 			}
 
-			final Block blockHit = mc.world.getBlockState(rayHit.getBlockPos()).getBlock();
+			final BlockPos blockPos = rayHit.getBlockPos();
+			occlusionAccumulation += getBlockOcclusion(blockPos, rayHit.sideHit);
 
-			float blockOcclusion = 1.0f;
-
-			if (!blockHit.isOpaqueCube(blockHit.getDefaultState())) {
-				// log("not a solid block!");
-				blockOcclusion *= 0.15f;
+			if (occlusionAccumulation >= Config.maxOcclusion) {
+				return Config.maxOcclusion;
 			}
-
-			occlusionAccumulation += blockOcclusion;
 
 			rayOrigin = new Vec3d(
 					rayHit.hitVec.x + normalToPlayer.x * 0.1,
@@ -491,7 +544,7 @@ public class SoundPhysics {
 			);
 		}
 
-		return occlusionAccumulation;
+		return Math.min(occlusionAccumulation, Config.maxOcclusion);
 	}
 
 	@SuppressWarnings("deprecation")
@@ -795,22 +848,22 @@ public class SoundPhysics {
 		checkErrorLog("Error while assigning reverb reflectionsGain: " + r.reflectionsGain);
 
 		EFX10.alEffectf(reverbSlot, EFX10.AL_EAXREVERB_LATE_REVERB_GAIN, r.lateReverbGain);
-		checkErrorLog("Error while assigning reverb lateReverbGain: " + r.lateReverbGain);
+		checkErrorLog("Error while assigning lateReverbGain: " + r.lateReverbGain);
 
 		EFX10.alEffectf(reverbSlot, EFX10.AL_EAXREVERB_LATE_REVERB_DELAY, r.lateReverbDelay);
-		checkErrorLog("Error while assigning reverb lateReverbDelay: " + r.lateReverbDelay);
+		checkErrorLog("Error while assigning lateReverbDelay: " + r.lateReverbDelay);
 
 		EFX10.alEffectf(reverbSlot, EFX10.AL_EAXREVERB_AIR_ABSORPTION_GAINHF, r.airAbsorptionGainHF);
-		checkErrorLog("Error while assigning reverb airAbsorptionGainHF: " + r.airAbsorptionGainHF);
+		checkErrorLog("Error while assigning airAbsorptionGainHF: " + r.airAbsorptionGainHF);
 
 		EFX10.alEffectf(reverbSlot, EFX10.AL_EAXREVERB_ROOM_ROLLOFF_FACTOR, r.roomRolloffFactor);
-		checkErrorLog("Error while assigning reverb roomRolloffFactor: " + r.roomRolloffFactor);
+		checkErrorLog("Error while assigning roomRolloffFactor: " + r.roomRolloffFactor);
 
 		EFX10.alEffectf(reverbSlot, EFX10.AL_EAXREVERB_ECHO_TIME, r.echoTime);
-		checkErrorLog("Error while assigning reverb echoTime: " + r.echoTime);
+		checkErrorLog("Error while assigning echoTime: " + r.echoTime);
 
 		EFX10.alEffectf(reverbSlot, EFX10.AL_EAXREVERB_ECHO_DEPTH, r.echoDepth);
-		checkErrorLog("Error while assigning reverb echoDepth: " + r.echoDepth);
+		checkErrorLog("Error while assigning echoDepth: " + r.echoDepth);
 
 		// Attach updated effect object
 		EFX10.alAuxiliaryEffectSloti(auxFXSlot, EFX10.AL_EFFECTSLOT_EFFECT, reverbSlot);
