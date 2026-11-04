@@ -38,6 +38,8 @@ public class Config {
 	public static boolean skipRainOcclusionTracing;
 	public static int environmentEvaluationRays;
 	public static boolean simplerSharedAirspaceSimulation;
+	public static boolean strictOcclusion;
+	public static float occlusionVariation;
 
 	// block properties
 	public static float stoneReflectivity;
@@ -244,6 +246,22 @@ public class Config {
 
 
 		// Performance
+		strictOcclusion = this.forgeConfig.getBoolean(
+				"Strict Occlusion",
+				categoryPerformance,
+				false,
+				"If true, only one path between the sound source and the listener is used instead of nine"
+		);
+
+		occlusionVariation = this.forgeConfig.getFloat(
+				"Occlusion Variation",
+				categoryPerformance,
+				0.35f,
+				0.0f,
+				16.0f,
+				"Higher values mean smaller objects are less likely to occlude sounds. Set to 0 to disable variation for non-block sounds"
+		);
+
 		skipRainOcclusionTracing = this.forgeConfig.getBoolean(
 				"Skip Rain Occlusion Tracing",
 				categoryPerformance,

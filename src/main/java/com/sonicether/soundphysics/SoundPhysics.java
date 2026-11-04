@@ -409,6 +409,91 @@ public class SoundPhysics {
 		return mc.player.getEyeHeight();
 	}
 
+	/**
+	 * Calculates direct sound occlusion using multiple slightly offset ray paths.
+	 * The path with the lowest accumulated block occlusion is used, allowing
+	 * sound to pass through small openings that a single ray could miss.
+	 */
+	private static float calculateOcclusion(final Vec3d soundPos, final Vec3d playerPos,
+											final SoundCategory category, final String name) {
+		if (Config.strictOcclusion) {
+			return runOcclusion(soundPos, playerPos);
+		}
+
+		float variationFactor = Config.occlusionVariation;
+
+		final boolean isBlockSound = category == SoundCategory.BLOCKS ||
+				blockPattern.matcher(name).matches();
+
+		if (isBlockSound) {
+			variationFactor = Math.max(variationFactor, 0.49f);
+		}
+
+		float minOcclusion = runOcclusion(soundPos, playerPos);
+
+		if (variationFactor <= 0.0f) {
+			return minOcclusion;
+		}
+
+		for (int x = -1; x <= 1; x += 2) {
+			for (int y = -1; y <= 1; y += 2) {
+				for (int z = -1; z <= 1; z += 2) {
+					final Vec3d offset = new Vec3d(
+							x * variationFactor,
+							y * variationFactor,
+							z * variationFactor
+					);
+
+					final float occlusion = runOcclusion(
+							soundPos.add(offset),
+							playerPos.add(offset)
+					);
+
+					minOcclusion = Math.min(minOcclusion, occlusion);
+				}
+			}
+		}
+
+		return minOcclusion;
+	}
+
+	/**
+	 * Traces one path from the sound source to the listener and accumulates
+	 * the occlusion contribution of every block intersected by that path.
+	 */
+	private static float runOcclusion(final Vec3d soundPos, final Vec3d playerPos) {
+		final Vec3d normalToPlayer = playerPos.subtract(soundPos).normalize();
+		Vec3d rayOrigin = soundPos;
+		float occlusionAccumulation = 0.0f;
+
+		for (int i = 0; i < 10; i++) {
+			final RayTraceResult rayHit = mc.world.rayTraceBlocks(rayOrigin, playerPos, true);
+
+			if (rayHit == null) {
+				break;
+			}
+
+			final Block blockHit = mc.world.getBlockState(rayHit.getBlockPos()).getBlock();
+
+			float blockOcclusion = 1.0f;
+
+			if (!blockHit.isOpaqueCube(blockHit.getDefaultState())) {
+				// log("not a solid block!");
+				blockOcclusion *= 0.15f;
+			}
+
+			occlusionAccumulation += blockOcclusion;
+
+			rayOrigin = new Vec3d(
+					rayHit.hitVec.x + normalToPlayer.x * 0.1,
+					rayHit.hitVec.y + normalToPlayer.y * 0.1,
+					rayHit.hitVec.z + normalToPlayer.z * 0.1
+			);
+		}
+
+		return occlusionAccumulation;
+	}
+
 	@SuppressWarnings("deprecation")
 	private static void evaluateEnvironment(final int sourceID, final float posX, final float posY, final float posZ, final SoundCategory category,
 											final String name, ISound.AttenuationType attType) {
@@ -434,7 +519,6 @@ public class SoundPhysics {
 
 			final Vec3d playerPos = new Vec3d(mc.player.posX, mc.player.posY + getPlayerEyeHeight(), mc.player.posZ);
 			final Vec3d soundPos = offsetSoundByName(posX, posY, posZ, playerPos, name, category);
-			final Vec3d normalToPlayer = playerPos.subtract(soundPos).normalize();
 
 			float airAbsorptionFactor = 1.0f;
 
@@ -450,31 +534,7 @@ public class SoundPhysics {
 				airAbsorptionFactor = Math.max(Config.snowAirAbsorptionFactor*mc.world.getRainStrength(1.0f)*snowFactor,airAbsorptionFactor);
 			}
 
-			Vec3d rayOrigin = soundPos;
-
-			float occlusionAccumulation = 0.0f;
-
-			for (int i = 0; i < 10; i++) {
-				final RayTraceResult rayHit = mc.world.rayTraceBlocks(rayOrigin, playerPos, true);
-
-				if (rayHit == null) {
-					break;
-				}
-
-				final Block blockHit = mc.world.getBlockState(rayHit.getBlockPos()).getBlock();
-
-				float blockOcclusion = 1.0f;
-
-				if (!blockHit.isOpaqueCube(blockHit.getDefaultState())) {
-					// log("not a solid block!");
-					blockOcclusion *= 0.15f;
-				}
-
-				occlusionAccumulation += blockOcclusion;
-
-				rayOrigin = new Vec3d(rayHit.hitVec.x + normalToPlayer.x * 0.1, rayHit.hitVec.y + normalToPlayer.y * 0.1,
-						rayHit.hitVec.z + normalToPlayer.z * 0.1);
-			}
+			final float occlusionAccumulation = calculateOcclusion(soundPos, playerPos, category, name);
 
 			directCutoff = (float) Math.exp(-occlusionAccumulation * absorptionCoeff);
 			float directGain = (float) Math.pow(directCutoff, 0.1);
