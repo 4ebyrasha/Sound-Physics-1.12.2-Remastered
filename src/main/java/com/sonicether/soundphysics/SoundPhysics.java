@@ -572,8 +572,20 @@ public class SoundPhysics {
 	}
 
 	@SuppressWarnings("deprecation")
-	private static float getBlockReflectivity(final BlockPos blockPos, final ClientWorldSnapshot worldSnapshot) {
-		final Block block = worldSnapshot.getBlockState(blockPos).getBlock();
+	private static float getBlockReflectivity(
+			final BlockPos blockPos,
+			final ClientWorldSnapshot worldSnapshot
+	) {
+		final Block block =
+				worldSnapshot.getBlockState(blockPos).getBlock();
+
+		final Float override =
+				BlockAcousticManager.getReflectivity(block);
+
+		if (override != null) {
+			return override * Config.globalBlockReflectance;
+		}
+
 		final SoundType soundType = block.getSoundType();
 
 		float reflectivity = 0.5f;
@@ -602,9 +614,7 @@ public class SoundPhysics {
 			reflectivity = Config.metalReflectivity;
 		}
 
-		reflectivity *= Config.globalBlockReflectance;
-
-		return reflectivity;
+		return reflectivity * Config.globalBlockReflectance;
 	}
 
 	private static Vec3d getNormalFromFacing(final EnumFacing sideHit) {
@@ -869,11 +879,24 @@ public class SoundPhysics {
 	 * closed doors obstruct sound, while open doors and gates contribute
 	 * no additional occlusion.
 	 */
-	private static float getBlockOcclusion(final BlockPos blockPos,
-										   final EnumFacing sideHit,
-										   final ClientWorldSnapshot worldSnapshot) {
-		final IBlockState blockState = worldSnapshot.getBlockState(blockPos);
+	@SuppressWarnings("deprecation")
+	private static float getBlockOcclusion(
+			final BlockPos blockPos,
+			final EnumFacing sideHit,
+			final ClientWorldSnapshot worldSnapshot
+	) {
+		final IBlockState blockState =
+				worldSnapshot.getBlockState(blockPos);
+
 		final Block block = blockState.getBlock();
+
+		final Float override =
+				BlockAcousticManager.getOcclusion(block);
+
+		if (override != null) {
+			return override;
+		}
+
 		final Material material = blockState.getMaterial();
 
 		if (block == Blocks.JUKEBOX) {
@@ -919,15 +942,20 @@ public class SoundPhysics {
 				blockOcclusion = 0.1f;
 			} else if (soundType == SoundType.SNOW) {
 				blockOcclusion = 0.1f;
-			} else if (soundType == SoundType.PLANT
-					|| soundType == SoundType.LADDER) {
+			} else if (soundType == SoundType.PLANT ||
+					soundType == SoundType.LADDER) {
 				blockOcclusion = 0.0f;
 			} else {
 				blockOcclusion = Config.defaultBlockOcclusionFactor;
 			}
 		}
 
-		if (!block.isSideSolid(blockState, worldSnapshot, blockPos, sideHit)) {
+		if (!block.isSideSolid(
+				blockState,
+				worldSnapshot,
+				blockPos,
+				sideHit
+		)) {
 			blockOcclusion *= Config.nonFullBlockOcclusionFactor;
 		}
 

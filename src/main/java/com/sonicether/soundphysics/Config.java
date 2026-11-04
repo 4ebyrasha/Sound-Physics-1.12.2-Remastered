@@ -53,6 +53,7 @@ public class Config {
 	public static String[] soundRateLimits;
 
 	// block properties
+	public static String[] blockAcousticOverrides;
 	public static float stoneReflectivity;
 	public static float woodReflectivity;
 	public static float groundReflectivity;
@@ -483,6 +484,17 @@ public class Config {
 				1.0f,
 				"Sound reflectivity for snow blocks."
 		);
+
+		blockAcousticOverrides = this.forgeConfig.getStringList(
+				"Block Acoustic Overrides",
+				categoryMaterialProperties,
+				new String[0],
+				"Per-block acoustic overrides. Format: modid:block=occlusion,reflectivity. " +
+						"Occlusion range: 0-10. Reflectivity range: 0-1. " +
+						"Overrides SoundType defaults. Global multipliers are still applied."
+		);
+
+		BlockAcousticManager.configure(blockAcousticOverrides);
 
 
 		// Audio loading
