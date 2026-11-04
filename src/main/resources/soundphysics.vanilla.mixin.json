@@ -1,0 +1,19 @@
+{
+  "required": true,
+  "package": "com.sonicether.soundphysics.mixin.vanilla",
+  "compatibilityLevel": "JAVA_8",
+  "refmap": "soundphysics.mixins.refmap.json",
+  "mixins": [
+    "MixinPlayerList",
+    "MixinEntity"
+  ],
+  "client": [
+    "MixinLibraryLWJGLOpenAL",
+    "MixinSoundManager",
+    "MixinSoundSystem",
+    "MixinSoundSystemStarterThread",
+    "MixinSourceLWJGLOpenAL",
+    "MixinSoundEvents"
+  ],
+  "minVersion": "0.8"
+}
