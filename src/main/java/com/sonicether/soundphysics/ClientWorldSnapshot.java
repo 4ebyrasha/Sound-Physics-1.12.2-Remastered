@@ -249,7 +249,6 @@ public final class ClientWorldSnapshot implements IBlockAccess {
      * Blocks that replace vanilla collisionRayTrace with custom World-specific
      * logic cannot run that override against this IBlockAccess-only snapshot.
      */
-    @SuppressWarnings("all")
     @Nullable
     public RayTraceResult rayTraceBlocks(Vec3d start, Vec3d end, boolean stopOnLiquid) {
         if (Double.isNaN(start.x) || Double.isNaN(start.y) || Double.isNaN(start.z) ||
@@ -265,7 +264,17 @@ public final class ClientWorldSnapshot implements IBlockAccess {
         int endY = MathHelper.floor(end.y);
         int endZ = MathHelper.floor(end.z);
 
-        RayTraceResult hit = rayTraceBlock(new BlockPos(x, y, z), start, end, stopOnLiquid);
+        // Do not trace through chunks that are not present in the snapshot.
+        if (getChunkSnapshot(x >> 4, z >> 4) == null) {
+            return null;
+        }
+
+        RayTraceResult hit = rayTraceBlock(
+                new BlockPos(x, y, z),
+                start,
+                end,
+                stopOnLiquid
+        );
 
         if (hit != null) {
             return hit;
@@ -281,8 +290,10 @@ public final class ClientWorldSnapshot implements IBlockAccess {
 
         double tMaxX = stepX > 0 ? (x + 1.0D - start.x) / deltaX
                 : stepX < 0 ? (x - start.x) / deltaX : Double.POSITIVE_INFINITY;
+
         double tMaxY = stepY > 0 ? (y + 1.0D - start.y) / deltaY
                 : stepY < 0 ? (y - start.y) / deltaY : Double.POSITIVE_INFINITY;
+
         double tMaxZ = stepZ > 0 ? (z + 1.0D - start.z) / deltaZ
                 : stepZ < 0 ? (z - start.z) / deltaZ : Double.POSITIVE_INFINITY;
 
@@ -312,7 +323,18 @@ public final class ClientWorldSnapshot implements IBlockAccess {
                 tMaxZ += tDeltaZ;
             }
 
-            hit = rayTraceBlock(new BlockPos(x, y, z), start, end, stopOnLiquid);
+            // Stop immediately when the ray leaves the cached chunk area.
+            // There is no valid block data beyond this point.
+            if (getChunkSnapshot(x >> 4, z >> 4) == null) {
+                return null;
+            }
+
+            hit = rayTraceBlock(
+                    new BlockPos(x, y, z),
+                    start,
+                    end,
+                    stopOnLiquid
+            );
 
             if (hit != null) {
                 return hit;
