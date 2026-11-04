@@ -639,9 +639,8 @@ public class SoundPhysics {
 	}
 
 	/**
-	 * Checks whether a position shares unobstructed airspace with the listener.
-	 * <p>
-	 * Missing chunk data is treated as unknown, not as open air.
+	 * Checks whether a position shares unobstructed airspace
+	 * with the listener.
 	 */
 	@Nullable
 	private static Vec3d getSharedAirspace(
@@ -654,13 +653,14 @@ public class SoundPhysics {
 				listenerPosition,
 				worldSnapshot,
 				null,
-				SoundDirectionDebug.COLOR_VALID
+				SoundDirectionDebug.COLOR_VALID,
+				null
 		);
 	}
 
 	/**
-	 * Checks whether a position shares unobstructed airspace with the listener
-	 * and optionally records the tested path for the direction debug overlay.
+	 * Checks shared airspace and optionally records
+	 * the tested path for direction debugging.
 	 */
 	@Nullable
 	private static Vec3d getSharedAirspace(
@@ -670,11 +670,38 @@ public class SoundPhysics {
 			SoundDirectionDebug.Builder debug,
 			int clearColor
 	) {
+		return getSharedAirspace(
+				soundPosition,
+				listenerPosition,
+				worldSnapshot,
+				debug,
+				clearColor,
+				null
+		);
+	}
+
+	/**
+	 * Checks shared airspace while optionally ignoring
+	 * the block from which the ray originated.
+	 */
+	@Nullable
+	private static Vec3d getSharedAirspace(
+			Vec3d soundPosition,
+			Vec3d listenerPosition,
+			ClientWorldSnapshot worldSnapshot,
+			SoundDirectionDebug.Builder debug,
+			int clearColor,
+			@Nullable BlockPos ignoredBlock
+	) {
 		if (worldSnapshot == null) {
 			return null;
 		}
 
-		if (!worldSnapshot.hasChunkCoverage(soundPosition, listenerPosition)) {
+		if (!worldSnapshot.hasChunkCoverage(
+				soundPosition,
+				listenerPosition
+		)) {
+
 			if (debug != null) {
 				debug.addLine(
 						soundPosition,
@@ -682,19 +709,27 @@ public class SoundPhysics {
 						SoundDirectionDebug.COLOR_UNKNOWN
 				);
 			}
+
 			return null;
 		}
 
 		final RayTraceResult hit = worldSnapshot.rayTraceBlocks(
 				soundPosition,
 				listenerPosition,
-				true
+				true,
+				ignoredBlock
 		);
 
 		if (hit == null) {
+
 			if (debug != null) {
-				debug.addLine(soundPosition, listenerPosition, clearColor);
+				debug.addLine(
+						soundPosition,
+						listenerPosition,
+						clearColor
+				);
 			}
+
 			return soundPosition.subtract(listenerPosition);
 		}
 
@@ -710,10 +745,10 @@ public class SoundPhysics {
 	}
 
 	/**
-	 * Checks shared airspace starting from a block reflection point.
+	 * Checks shared airspace starting from a reflection point.
 	 * <p>
-	 * The ray is slightly offset along the surface normal to avoid
-	 * immediately colliding with the same block.
+	 * The block producing the reflection is explicitly ignored.
+	 * No artificial positional offset is required.
 	 */
 	@Nullable
 	private static Vec3d getSharedAirspace(
@@ -730,8 +765,8 @@ public class SoundPhysics {
 	}
 
 	/**
-	 * Checks shared airspace starting from a block reflection point and
-	 * optionally records the tested path for the direction debug overlay.
+	 * Checks shared airspace starting from a reflection point
+	 * and optionally records the tested path.
 	 */
 	@Nullable
 	private static Vec3d getSharedAirspace(
@@ -740,24 +775,20 @@ public class SoundPhysics {
 			ClientWorldSnapshot worldSnapshot,
 			SoundDirectionDebug.Builder debug
 	) {
-		if (hit == null || hit.sideHit == null || hit.hitVec == null) {
+		if (hit == null ||
+				hit.typeOfHit != RayTraceResult.Type.BLOCK ||
+				hit.sideHit == null ||
+				hit.hitVec == null) {
 			return null;
 		}
 
-		final Vec3d normal = getNormalFromFacing(hit.sideHit);
-
-		final Vec3d rayStart = hit.hitVec.add(
-				normal.x * 0.01D,
-				normal.y * 0.01D,
-				normal.z * 0.01D
-		);
-
 		return getSharedAirspace(
-				rayStart,
+				hit.hitVec,
 				listenerPosition,
 				worldSnapshot,
 				debug,
-				SoundDirectionDebug.COLOR_VALID
+				SoundDirectionDebug.COLOR_VALID,
+				hit.getBlockPos()
 		);
 	}
 
@@ -1133,6 +1164,7 @@ public class SoundPhysics {
 			final boolean isRain = rainPattern.matcher(name).matches();
 
 			if (Config.skipRainOcclusionTracing && isRain) {
+
 				setEnvironment(
 						sourceID,
 						0.0f, 0.0f, 0.0f, 0.0f,
@@ -1240,6 +1272,7 @@ public class SoundPhysics {
 			}
 
 			if (isRain) {
+
 				setEnvironment(
 						sourceID,
 						sendGain0,
@@ -1260,6 +1293,7 @@ public class SoundPhysics {
 
 			final float phi = 1.618033988f;
 			final float gAngle = phi * (float) Math.PI * 2.0f;
+
 			final float maxDistance = Config.maxDistance;
 
 			final int numRays = Config.environmentEvaluationRays;
@@ -1338,7 +1372,11 @@ public class SoundPhysics {
 						worldSnapshot.hasChunkCoverage(rayStart, rayEnd);
 
 				final RayTraceResult rayHit =
-						worldSnapshot.rayTraceBlocks(rayStart, rayEnd, true);
+						worldSnapshot.rayTraceBlocks(
+								rayStart,
+								rayEnd,
+								true
+						);
 
 				if (rayHit != null) {
 
@@ -1377,6 +1415,12 @@ public class SoundPhysics {
 
 				float totalRayDistance = (float) rayLength;
 
+				/*
+				 * Check the first reflection point.
+				 *
+				 * getSharedAirspace now ignores the block
+				 * that generated this reflection.
+				 */
 				final Vec3d firstSharedAirspaceVector =
 						getSharedAirspace(
 								rayHit,
@@ -1398,11 +1442,13 @@ public class SoundPhysics {
 					final Vec3d newRayDir =
 							reflect(lastRayDir, lastHitNormal);
 
-					final Vec3d newRayStart = new Vec3d(
-							lastHitPos.x + lastHitNormal.x * 0.01,
-							lastHitPos.y + lastHitNormal.y * 0.01,
-							lastHitPos.z + lastHitNormal.z * 0.01
-					);
+					/*
+					 * Start directly at the reflection point.
+					 *
+					 * The previous block is passed separately
+					 * and explicitly excluded from ray tracing.
+					 */
+					final Vec3d newRayStart = lastHitPos;
 
 					final Vec3d newRayEnd = new Vec3d(
 							newRayStart.x + newRayDir.x * maxDistance,
@@ -1420,7 +1466,8 @@ public class SoundPhysics {
 							worldSnapshot.rayTraceBlocks(
 									newRayStart,
 									newRayEnd,
-									true
+									true,
+									lastHitBlock
 							);
 
 					directionDebug.addLine(
@@ -1467,11 +1514,13 @@ public class SoundPhysics {
 						if (!Config.simplerSharedAirspaceSimulation ||
 								j == rayBounces - 1) {
 
-							final Vec3d finalRayStart = new Vec3d(
-									lastHitPos.x + lastHitNormal.x * 0.01,
-									lastHitPos.y + lastHitNormal.y * 0.01,
-									lastHitPos.z + lastHitNormal.z * 0.01
-							);
+							/*
+							 * No normal offset.
+							 *
+							 * Explicitly ignore the block that produced
+							 * the current reflection.
+							 */
+							final Vec3d finalRayStart = lastHitPos;
 
 							final Vec3d sharedAirspaceVector =
 									getSharedAirspace(
@@ -1479,7 +1528,8 @@ public class SoundPhysics {
 											playerPos,
 											worldSnapshot,
 											directionDebug,
-											SoundDirectionDebug.COLOR_VALID
+											SoundDirectionDebug.COLOR_VALID,
+											lastHitBlock
 									);
 
 							if (sharedAirspaceVector != null) {

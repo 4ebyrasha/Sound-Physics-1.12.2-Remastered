@@ -63,16 +63,50 @@ public final class ReflectedAudio {
 
         double vectorLength = sharedAirspaceVector.length();
 
-        if (vectorLength < 1.0E-4D) {
+        if (vectorLength < 1.0E-4D ||
+                Double.isNaN(vectorLength) ||
+                Double.isInfinite(vectorLength)) {
             return;
         }
 
+        /*
+         * Total acoustic path length:
+         *
+         * source -> reflection point
+         * +
+         * reflection point -> listener
+         */
         double pathLength =
                 totalRayDistance + vectorLength;
 
         if (pathLength <= 0.0D ||
                 Double.isNaN(pathLength) ||
                 Double.isInfinite(pathLength)) {
+            return;
+        }
+
+        /*
+         * The 1.12.2 port does not have the modern
+         * maxSoundProcessingDistance config option.
+         *
+         * Config.maxDistance is the existing maximum
+         * ray tracing distance in this version.
+         *
+         * Config.rolloffFactor corresponds to the
+         * attenuation factor used by the upstream logic.
+         */
+        double attenuationFactor = Config.rolloffFactor;
+
+        if (attenuationFactor <= 0.0D ||
+                Double.isNaN(attenuationFactor) ||
+                Double.isInfinite(attenuationFactor)) {
+            return;
+        }
+
+        double maxPathLength =
+                Config.maxDistance / attenuationFactor;
+
+        if (pathLength > maxPathLength) {
             return;
         }
 
@@ -92,6 +126,7 @@ public final class ReflectedAudio {
         resultingDirection = Vec3d.ZERO;
 
         if (!shouldEvaluateDirection()) {
+
             resultStatus = Config.soundDirectionEvaluation
                     ? "SKIPPED_NOT_OCCLUDED"
                     : "DIRECTION_EVALUATION_DISABLED";
@@ -113,11 +148,14 @@ public final class ReflectedAudio {
          * Reflections use inverse-square path-length weighting.
          */
         if (directDirection != null) {
+
             Vec3d normalizedDirect =
                     directDirection.normalize();
 
             if (normalizedDirect.lengthSquared() > 0.0D) {
+
                 directionSum = directionSum.add(normalizedDirect);
+
                 totalWeight += 1.0D;
             }
         }
@@ -131,6 +169,7 @@ public final class ReflectedAudio {
                     Double.isInfinite(pathLength)) {
 
                 resultStatus = "INVALID_PATH_LENGTH";
+
                 return null;
             }
 
@@ -163,8 +202,7 @@ public final class ReflectedAudio {
         }
 
         /*
-         * Important:
-         * Measure the length BEFORE normalization.
+         * Measure length BEFORE normalization.
          *
          * Normalizing first would turn even a nearly cancelled
          * vector into a full-length unit direction.
@@ -176,6 +214,7 @@ public final class ReflectedAudio {
                 resultantLength < 1.0E-8D) {
 
             resultStatus = "DIRECTIONS_CANCELLED";
+
             return null;
         }
 
@@ -186,11 +225,11 @@ public final class ReflectedAudio {
 
         /*
          * Reject unstable results.
-         * Better to preserve the real source position than
-         * redirect sound towards an arbitrary direction.
          */
         if (directionCoherence < MIN_DIRECTION_COHERENCE) {
+
             resultStatus = "LOW_DIRECTION_COHERENCE";
+
             return null;
         }
 
@@ -201,7 +240,9 @@ public final class ReflectedAudio {
                 soundPos.distanceTo(listenerPos);
 
         if (originalDistance < 1.0E-4D) {
+
             resultStatus = "SOURCE_TOO_CLOSE_TO_LISTENER";
+
             return null;
         }
 
@@ -238,11 +279,13 @@ public final class ReflectedAudio {
      * Returns a compact description of the contributing paths.
      */
     public String getSampleSummary(int maximumSamples) {
+
         if (airspaceDirections.isEmpty()) {
             return "[]";
         }
 
         StringBuilder result = new StringBuilder("[");
+
         int count = Math.min(
                 maximumSamples,
                 airspaceDirections.size()
@@ -278,8 +321,11 @@ public final class ReflectedAudio {
         }
 
         if (airspaceDirections.size() > count) {
+
             result.append(", ... +");
+
             result.append(airspaceDirections.size() - count);
+
             result.append(" more");
         }
 

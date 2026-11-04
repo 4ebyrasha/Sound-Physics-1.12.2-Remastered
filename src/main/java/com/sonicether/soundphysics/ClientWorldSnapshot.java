@@ -250,125 +250,253 @@ public final class ClientWorldSnapshot implements IBlockAccess {
      * logic cannot run that override against this IBlockAccess-only snapshot.
      */
     @Nullable
-    public RayTraceResult rayTraceBlocks(Vec3d start, Vec3d end, boolean stopOnLiquid) {
-        if (Double.isNaN(start.x) || Double.isNaN(start.y) || Double.isNaN(start.z) ||
-                Double.isNaN(end.x) || Double.isNaN(end.y) || Double.isNaN(end.z) ||
-                Double.isInfinite(start.x) || Double.isInfinite(start.y) || Double.isInfinite(start.z) ||
-                Double.isInfinite(end.x) || Double.isInfinite(end.y) || Double.isInfinite(end.z)) {
+    public RayTraceResult rayTraceBlocks(
+            Vec3d start,
+            Vec3d end,
+            boolean stopOnLiquid
+    ) {
+        return rayTraceBlocks(
+                start,
+                end,
+                stopOnLiquid,
+                null
+        );
+    }
+
+    @Nullable
+    public RayTraceResult rayTraceBlocks(
+            Vec3d start,
+            Vec3d end,
+            boolean stopOnLiquid,
+            @Nullable BlockPos ignoredBlock
+    ) {
+        if (Double.isNaN(start.x) ||
+                Double.isNaN(start.y) ||
+                Double.isNaN(start.z) ||
+                Double.isNaN(end.x) ||
+                Double.isNaN(end.y) ||
+                Double.isNaN(end.z) ||
+                Double.isInfinite(start.x) ||
+                Double.isInfinite(start.y) ||
+                Double.isInfinite(start.z) ||
+                Double.isInfinite(end.x) ||
+                Double.isInfinite(end.y) ||
+                Double.isInfinite(end.z)) {
             return null;
         }
-
-        int x = MathHelper.floor(start.x);
-        int y = MathHelper.floor(start.y);
-        int z = MathHelper.floor(start.z);
 
         int endX = MathHelper.floor(end.x);
         int endY = MathHelper.floor(end.y);
         int endZ = MathHelper.floor(end.z);
 
+        int x = MathHelper.floor(start.x);
+        int y = MathHelper.floor(start.y);
+        int z = MathHelper.floor(start.z);
+
         if (getChunkSnapshot(x >> 4, z >> 4) == null) {
             return null;
         }
 
-        final double segmentLength = start.distanceTo(end);
+        Vec3d currentStart = start;
 
-        RayTraceResult closestHit = rayTraceBlock(
-                new BlockPos(x, y, z),
-                start,
-                end,
-                stopOnLiquid
-        );
+        BlockPos currentBlock = new BlockPos(x, y, z);
 
-        double closestHitDistance = closestHit == null
-                ? Double.POSITIVE_INFINITY
-                : start.distanceTo(closestHit.hitVec);
+        /*
+         * Check the block containing the initial ray position.
+         *
+         * The previously reflected block can be explicitly ignored.
+         */
+        if (!currentBlock.equals(ignoredBlock)) {
 
-        double deltaX = end.x - start.x;
-        double deltaY = end.y - start.y;
-        double deltaZ = end.z - start.z;
+            RayTraceResult initialHit = rayTraceBlock(
+                    currentBlock,
+                    currentStart,
+                    end,
+                    stopOnLiquid
+            );
 
-        int stepX = deltaX > 0.0D ? 1 : deltaX < 0.0D ? -1 : 0;
-        int stepY = deltaY > 0.0D ? 1 : deltaY < 0.0D ? -1 : 0;
-        int stepZ = deltaZ > 0.0D ? 1 : deltaZ < 0.0D ? -1 : 0;
+            if (initialHit != null) {
+                return initialHit;
+            }
+        }
 
-        double tMaxX = stepX > 0 ? (x + 1.0D - start.x) / deltaX
-                : stepX < 0 ? (x - start.x) / deltaX : Double.POSITIVE_INFINITY;
+        /*
+         * Minecraft 1.12.2 vanilla DDA traversal.
+         *
+         * Unlike the previous implementation, only one axis
+         * is advanced per iteration.
+         *
+         * This is important when a ray crosses a block edge
+         * or corner.
+         */
+        for (int steps = 0; steps <= 200; steps++) {
 
-        double tMaxY = stepY > 0 ? (y + 1.0D - start.y) / deltaY
-                : stepY < 0 ? (y - start.y) / deltaY : Double.POSITIVE_INFINITY;
-
-        double tMaxZ = stepZ > 0 ? (z + 1.0D - start.z) / deltaZ
-                : stepZ < 0 ? (z - start.z) / deltaZ : Double.POSITIVE_INFINITY;
-
-        double tDeltaX = stepX == 0 ? Double.POSITIVE_INFINITY : Math.abs(1.0D / deltaX);
-        double tDeltaY = stepY == 0 ? Double.POSITIVE_INFINITY : Math.abs(1.0D / deltaY);
-        double tDeltaZ = stepZ == 0 ? Double.POSITIVE_INFINITY : Math.abs(1.0D / deltaZ);
-
-        final int maxSteps = Math.abs(endX - x) +
-                Math.abs(endY - y) +
-                Math.abs(endZ - z) + 3;
-
-        for (int steps = 0; steps < maxSteps; steps++) {
-
-            if (x == endX && y == endY && z == endZ) {
-                return closestHit;
+            if (x == endX &&
+                    y == endY &&
+                    z == endZ) {
+                return null;
             }
 
-            double nextT = Math.min(tMaxX, Math.min(tMaxY, tMaxZ));
+            boolean advanceX = true;
+            boolean advanceY = true;
+            boolean advanceZ = true;
 
-            if (Double.isInfinite(nextT) || nextT > 1.0D) {
-                return closestHit;
+            double boundaryX = 999.0D;
+            double boundaryY = 999.0D;
+            double boundaryZ = 999.0D;
+
+            if (endX > x) {
+                boundaryX = (double) x + 1.0D;
+            } else if (endX < x) {
+                boundaryX = (double) x;
+            } else {
+                advanceX = false;
             }
 
-            double nextDistance = segmentLength * nextT;
-
-            if (closestHit != null &&
-                    closestHitDistance <= nextDistance + 1.0E-7D) {
-                return closestHit;
+            if (endY > y) {
+                boundaryY = (double) y + 1.0D;
+            } else if (endY < y) {
+                boundaryY = (double) y;
+            } else {
+                advanceY = false;
             }
 
-            // Advance every axis crossed at this exact ray position.
-            boolean stepOnX = Math.abs(tMaxX - nextT) <= 1.0E-10D;
-            boolean stepOnY = Math.abs(tMaxY - nextT) <= 1.0E-10D;
-            boolean stepOnZ = Math.abs(tMaxZ - nextT) <= 1.0E-10D;
-
-            if (stepOnX) {
-                x += stepX;
-                tMaxX += tDeltaX;
+            if (endZ > z) {
+                boundaryZ = (double) z + 1.0D;
+            } else if (endZ < z) {
+                boundaryZ = (double) z;
+            } else {
+                advanceZ = false;
             }
 
-            if (stepOnY) {
-                y += stepY;
-                tMaxY += tDeltaY;
+            double deltaX = end.x - currentStart.x;
+            double deltaY = end.y - currentStart.y;
+            double deltaZ = end.z - currentStart.z;
+
+            double distanceX = advanceX
+                    ? (boundaryX - currentStart.x) / deltaX
+                    : 999.0D;
+
+            double distanceY = advanceY
+                    ? (boundaryY - currentStart.y) / deltaY
+                    : 999.0D;
+
+            double distanceZ = advanceZ
+                    ? (boundaryZ - currentStart.z) / deltaZ
+                    : 999.0D;
+
+            /*
+             * Prevent zero-distance boundary intersections
+             * from producing an infinite traversal loop.
+             */
+            if (distanceX == -0.0D) {
+                distanceX = -1.0E-4D;
             }
 
-            if (stepOnZ) {
-                z += stepZ;
-                tMaxZ += tDeltaZ;
+            if (distanceY == -0.0D) {
+                distanceY = -1.0E-4D;
             }
 
+            if (distanceZ == -0.0D) {
+                distanceZ = -1.0E-4D;
+            }
+
+            EnumFacing enteredSide;
+
+            /*
+             * Preserve vanilla axis priority:
+             *
+             * X if strictly closest,
+             * otherwise Y if strictly closer than Z,
+             * otherwise Z.
+             *
+             * Do not advance multiple axes simultaneously.
+             */
+            if (distanceX < distanceY &&
+                    distanceX < distanceZ) {
+
+                enteredSide = endX > x
+                        ? EnumFacing.WEST
+                        : EnumFacing.EAST;
+
+                currentStart = new Vec3d(
+                        boundaryX,
+                        currentStart.y + deltaY * distanceX,
+                        currentStart.z + deltaZ * distanceX
+                );
+
+            } else if (distanceY < distanceZ) {
+
+                enteredSide = endY > y
+                        ? EnumFacing.DOWN
+                        : EnumFacing.UP;
+
+                currentStart = new Vec3d(
+                        currentStart.x + deltaX * distanceY,
+                        boundaryY,
+                        currentStart.z + deltaZ * distanceY
+                );
+
+            } else {
+
+                enteredSide = endZ > z
+                        ? EnumFacing.NORTH
+                        : EnumFacing.SOUTH;
+
+                currentStart = new Vec3d(
+                        currentStart.x + deltaX * distanceZ,
+                        currentStart.y + deltaY * distanceZ,
+                        boundaryZ
+                );
+            }
+
+            /*
+             * Determine the newly entered block.
+             *
+             * Subtract one block on the positive-facing
+             * side when moving in a negative direction.
+             */
+            x = MathHelper.floor(currentStart.x)
+                    - (enteredSide == EnumFacing.EAST ? 1 : 0);
+
+            y = MathHelper.floor(currentStart.y)
+                    - (enteredSide == EnumFacing.UP ? 1 : 0);
+
+            z = MathHelper.floor(currentStart.z)
+                    - (enteredSide == EnumFacing.SOUTH ? 1 : 0);
+
+            currentBlock = new BlockPos(x, y, z);
+
+            /*
+             * Never interpret unavailable chunks as air.
+             */
             if (getChunkSnapshot(x >> 4, z >> 4) == null) {
                 return null;
             }
 
+            /*
+             * Skip the block from which the ray was reflected.
+             *
+             * This replaces the previous dependency on
+             * artificially moving the ray by 0.01 blocks.
+             */
+            if (currentBlock.equals(ignoredBlock)) {
+                continue;
+            }
+
             RayTraceResult hit = rayTraceBlock(
-                    new BlockPos(x, y, z),
-                    start,
+                    currentBlock,
+                    currentStart,
                     end,
                     stopOnLiquid
             );
 
             if (hit != null) {
-                double hitDistance = start.distanceTo(hit.hitVec);
-
-                if (hitDistance < closestHitDistance) {
-                    closestHit = hit;
-                    closestHitDistance = hitDistance;
-                }
+                return hit;
             }
         }
 
-        return closestHit;
+        return null;
     }
 
     @Nullable
@@ -379,12 +507,50 @@ public final class ClientWorldSnapshot implements IBlockAccess {
             boolean stopOnLiquid
     ) {
         IBlockState state = getBlockState(pos);
+
         Block block = state.getBlock();
 
         if (!block.canCollideCheck(state, stopOnLiquid)) {
             return null;
         }
 
+        /*
+         * Vanilla 1.12.2 Block#collisionRayTrace uses
+         * the block's getBoundingBox().
+         *
+         * Previously we tested both collision bounding box
+         * and selection bounding box, then selected whichever
+         * intersection was closer.
+         *
+         * That is not equivalent to vanilla ray tracing.
+         */
+        AxisAlignedBB boundingBox = state.getBoundingBox(
+                this,
+                pos
+        );
+
+        return rayTraceBox(
+                pos,
+                boundingBox,
+                start,
+                end
+        );
+    }
+
+    @Nullable
+    private RayTraceResult rayTraceBox(
+            BlockPos pos,
+            AxisAlignedBB box,
+            Vec3d start,
+            Vec3d end
+    ) {
+        if (box == null || box == Block.NULL_AABB) {
+            return null;
+        }
+
+        /*
+         * Block bounding boxes use local block coordinates.
+         */
         Vec3d localStart = new Vec3d(
                 start.x - pos.getX(),
                 start.y - pos.getY(),
@@ -397,45 +563,10 @@ public final class ClientWorldSnapshot implements IBlockAccess {
                 end.z - pos.getZ()
         );
 
-        RayTraceResult collisionHit = rayTraceBox(
-                pos,
-                state.getCollisionBoundingBox(this, pos),
+        RayTraceResult localHit = box.calculateIntercept(
                 localStart,
                 localEnd
         );
-
-        RayTraceResult interactionHit = rayTraceBox(
-                pos,
-                state.getBoundingBox(this, pos),
-                localStart,
-                localEnd
-        );
-
-        if (collisionHit == null) {
-            return interactionHit;
-        }
-
-        if (interactionHit == null) {
-            return collisionHit;
-        }
-
-        return start.distanceTo(collisionHit.hitVec) <= start.distanceTo(interactionHit.hitVec)
-                ? collisionHit
-                : interactionHit;
-    }
-
-    @Nullable
-    private RayTraceResult rayTraceBox(
-            BlockPos pos,
-            AxisAlignedBB box,
-            Vec3d localStart,
-            Vec3d localEnd
-    ) {
-        if (box == null || box == Block.NULL_AABB) {
-            return null;
-        }
-
-        RayTraceResult localHit = box.calculateIntercept(localStart, localEnd);
 
         if (localHit == null) {
             return null;
