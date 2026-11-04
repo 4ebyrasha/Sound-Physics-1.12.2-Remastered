@@ -3,15 +3,10 @@ package com.sonicether.soundphysics;
 import net.minecraft.block.Block;
 import net.minecraft.block.SoundType;
 import net.minecraft.block.material.Material;
-import net.minecraft.block.properties.PropertyDirection;
-import net.minecraft.block.state.IBlockState;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.audio.ISound;
 import net.minecraft.client.audio.MovingSound;
 import net.minecraft.entity.Entity;
-import net.minecraft.entity.item.EntityBoat;
-import net.minecraft.entity.player.EntityPlayer;
-import net.minecraft.tileentity.TileEntity;
 import net.minecraft.util.EnumFacing;
 import net.minecraft.util.ResourceLocation;
 import net.minecraft.util.SoundCategory;
@@ -25,7 +20,6 @@ import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.common.event.FMLInitializationEvent;
 import net.minecraftforge.fml.common.event.FMLPreInitializationEvent;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
-import org.apache.commons.lang3.reflect.FieldUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.lwjgl.BufferUtils;
@@ -41,8 +35,7 @@ import java.util.regex.Pattern;
 
 import static com.sonicether.soundphysics.ClientHelper.isInsideOfMaterial;
 
-@Mod(modid = SoundPhysics.modid, clientSideOnly = true, acceptedMinecraftVersions = SoundPhysics.mcVersion,
-	 version = Tags.VERSION, guiFactory = "com.sonicether.soundphysics.SPGuiFactory")
+@Mod(modid = SoundPhysics.modid, clientSideOnly = true, acceptedMinecraftVersions = SoundPhysics.mcVersion, version = Tags.VERSION, guiFactory = "com.sonicether.soundphysics.SPGuiFactory")
 public class SoundPhysics {
 
 	public static final String modid = "soundphysics";
@@ -88,7 +81,6 @@ public class SoundPhysics {
 	private static int maxAuxSends;
 
 	private static Minecraft mc;
-	private static SoundSystem sndSystem;
 
 	private static SoundCategory lastSoundCategory;
 	private static String lastSoundName;
@@ -98,7 +90,7 @@ public class SoundPhysics {
 	// NOT REMOVE!
 	public static int attenuationModel = SoundSystemConfig.ATTENUATION_ROLLOFF;
 	public static float globalRolloffFactor = Config.rolloffFactor;
-	public static float globalVolumeMultiplier0 = Config.globalVolumeMultiplier; // 0 is because of DS trying to read the value of the original name
+	public static float globalVolumeMultiplier = Config.globalVolumeMultiplier; // Global volume multiplier.
 	public static float globalReverbMultiplier = 0.7f * Config.globalReverbGain;
 	public static double soundDistanceAllowance = Config.soundDistanceAllowance;
 
@@ -106,20 +98,6 @@ public class SoundPhysics {
 	 * CALLED BY ASM INJECTED CODE!
 	 */
 	public static void init(SoundSystem snds) {
-		mc = Minecraft.getMinecraft();
-		sndSystem = snds;
-		try {
-			setupEFX();
-		} catch (Throwable e) {
-			logError("Failed to init EFX");
-			logError(e.toString());
-		}
-	}
-
-	/**
-	 * CALLED BY SVC INTEGRATION
-	 */
-	public static void init() {
 		mc = Minecraft.getMinecraft();
 		try {
 			setupEFX();
@@ -133,7 +111,7 @@ public class SoundPhysics {
 		globalRolloffFactor = Config.rolloffFactor;
 		globalReverbMultiplier = 0.7f * Config.globalReverbGain;
 		soundDistanceAllowance = Config.soundDistanceAllowance;
-		globalVolumeMultiplier0 = Config.globalVolumeMultiplier;
+		globalVolumeMultiplier = Config.globalVolumeMultiplier;
 
 		if (auxFXSlot0 != 0) {
 			// Set the global reverb parameters and apply them to the effect and
@@ -160,7 +138,7 @@ public class SoundPhysics {
 		ALC10.alcGetInteger(currentDevice, EFX10.ALC_MAX_AUXILIARY_SENDS, buffer);
 		maxAuxSends = buffer.get();
 		log("Max auxiliary sends: " + maxAuxSends);
-		
+
 		// Create auxiliary effect slots
 		auxFXSlot0 = EFX10.alGenAuxiliaryEffectSlots();
 		log("Aux slot " + auxFXSlot0 + " created");
@@ -234,56 +212,10 @@ public class SoundPhysics {
 	/**
 	 * CALLED BY ASM INJECTED CODE!
 	 */
-	public static void setLastSound(final SoundCategory sc, final String soundName) {
-		lastSoundCategory = sc;
-		lastSoundName = soundName;
-		lastSoundAtt = ISound.AttenuationType.LINEAR;
-	}
-
-	/**
-	 * CALLED BY ASM INJECTED CODE!
-	 */
-	// For IC2
-	public static void setLastSound(final int position, final String soundName) {
-		lastSoundCategory = position == 0 ? SoundCategory.BLOCKS : SoundCategory.PLAYERS;
-		if (soundName != null)
-			lastSoundName = "ic2:"+soundName;
-		else // Can't get easliy get sound name for normal IC2 Classic sources
-			lastSoundName = "ic2";
-		lastSoundAtt = ISound.AttenuationType.LINEAR;
-	}
-
-	/**
-	 * CALLED BY ASM INJECTED CODE!
-	 */
-	public static int ic2DistanceCheckHook(float i, float dst, float x1, float y1, float z1, float x2, float y2, float z2) {
-		if (i >= dst ||
-			(MathHelper.floor(x1) == MathHelper.floor(x2) &&
-			MathHelper.floor(y1) == MathHelper.floor(y2) &&
-			MathHelper.floor(z1) == MathHelper.floor(z2))) return 1;
-		if (dst == i) return 0;
-		return -1;
-	}
-
-	/**
-	 * CALLED BY ASM INJECTED CODE!
-	 */
-	public static int ic2DistanceCheckHook(double i, double dst, Vec3d p1, Vec3d p2) {
-		if (i >= dst ||
-			(MathHelper.floor(p1.x) == MathHelper.floor(p2.x) &&
-			MathHelper.floor(p1.y) == MathHelper.floor(p2.y) &&
-			MathHelper.floor(p1.z) == MathHelper.floor(p2.z))) return 1;
-		if (dst == i) return 0;
-		return -1;
-	}
-
-	/**
-	 * CALLED BY ASM INJECTED CODE!
-	 */
 	public static float applyGlobalVolumeMultiplier(final float volume) {
 		if (!Config.volumeMulOnlyAffected || !(mc.player == null || mc.world == null || lastSoundCategory == SoundCategory.MASTER ||
-			lastSoundAtt == ISound.AttenuationType.NONE || lastSoundCategory == SoundCategory.RECORDS || lastSoundCategory == SoundCategory.MUSIC)) {
-			return volume*globalVolumeMultiplier0;
+				lastSoundAtt == ISound.AttenuationType.NONE || lastSoundCategory == SoundCategory.RECORDS || lastSoundCategory == SoundCategory.MUSIC)) {
+			return volume * globalVolumeMultiplier;
 		} else {
 			return volume;
 		}
@@ -295,32 +227,6 @@ public class SoundPhysics {
 	// For sounds that get played normally
 	public static void onPlaySound(final float posX, final float posY, final float posZ, final int sourceID) {
 		onPlaySound(posX, posY, posZ, sourceID, lastSoundCategory, lastSoundName, lastSoundAtt);
-	}
-
-	/**
-	 * CALLED BY ASM INJECTED CODE!
-	 */
-	// For Gliby's VC, sound system source id
-	// This is kind of hacked together, it's not great
-	public static void onPlaySound(final String id) {
-		try { // Getting the sound library here is not ideal but i can't really do better because gibly changes it after startup
-			Library sndLibrary = (Library)FieldUtils.readField(sndSystem,"soundLibrary",true);
-			if (sndLibrary == null)
-				return;
-
-			Source src = sndLibrary.getSource(id);
-			if (src == null || src.channel == null)
-				return;
-
-			IntBuffer srcid = (IntBuffer)FieldUtils.readField(src.channel,"ALSource");
-			if (srcid == null)
-				return;
-
-			onPlaySound(src.position.x, src.position.y, src.position.z, srcid.get(0), SoundCategory.PLAYERS, id, ISound.AttenuationType.LINEAR);
-		} catch (Exception e) {
-			logError("Error trying to get source info");
-			logError(e.toString());
-		}
 	}
 
 	/**
@@ -391,20 +297,10 @@ public class SoundPhysics {
 		return new Vec3d(pos.x,pos.y+calculateEntitySoundOffset(entity,sound),pos.z);
 	}
 
-	/**
-	 * CALLED BY ASM INJECTED CODE!
-	 */
-	public static Vec3d computronicsOffset(Vec3d or, TileEntity te, PropertyDirection pd) {
-		if (!te.hasWorld()) return or;
-		EnumFacing ef = te.getWorld().getBlockState(te.getPos()).getValue(pd);
-		Vec3d efv = getNormalFromFacing(ef).scale(0.51);
-		return or.add(efv);
-	}
-
 	// Copy of isRainingAt
 	private static boolean isSnowingAt(BlockPos position, boolean check_rain) {
 		if ((check_rain && !mc.world.isRaining()) || !mc.world.canSeeSky(position) ||
-			mc.world.getPrecipitationHeight(position).getY() > position.getY()) {
+				mc.world.getPrecipitationHeight(position).getY() > position.getY()) {
 			return false;
 		} else {
 			return mc.world.canSnowAt(position, false) || mc.world.getBiome(position).getEnableSnow();
@@ -462,7 +358,7 @@ public class SoundPhysics {
 	}
 
 	private static Vec3d offsetSoundByName(final double soundX, final double soundY, final double soundZ,
-			final Vec3d playerPos, final String name, final SoundCategory category) {
+										   final Vec3d playerPos, final String name, final SoundCategory category) {
 		double offsetX = 0.0;
 		double offsetY = 0.0;
 		double offsetZ = 0.0;
@@ -477,14 +373,14 @@ public class SoundPhysics {
 		}
 
 		if ((category == SoundCategory.BLOCKS || blockPattern.matcher(name).matches() ||
-			(name.equals("openal") && !mc.world.isAirBlock(new BlockPos(soundX,soundY,soundZ)))) &&
-			(MathHelper.floor(playerPos.x) != MathHelper.floor(soundX) ||
-			 MathHelper.floor(playerPos.y) != MathHelper.floor(soundY) ||
-			 MathHelper.floor(playerPos.z) != MathHelper.floor(soundZ))) {
+				(name.equals("openal") && !mc.world.isAirBlock(new BlockPos(soundX,soundY,soundZ)))) &&
+				(MathHelper.floor(playerPos.x) != MathHelper.floor(soundX) ||
+						MathHelper.floor(playerPos.y) != MathHelper.floor(soundY) ||
+						MathHelper.floor(playerPos.z) != MathHelper.floor(soundZ))) {
 			// The ray will probably hit the block that it's emitting from
 			// before
 			// escaping. Offset the ray start position towards the player by the
-			// diagonal half length of a cube
+			// diagonal half-length of a cube
 
 			tempNormX = playerPos.x - soundX;
 			tempNormY = playerPos.y - soundY;
@@ -518,7 +414,7 @@ public class SoundPhysics {
 											final String name, ISound.AttenuationType attType) {
 		try {
 			if (mc.player == null || mc.world == null || category == SoundCategory.MASTER || attType == ISound.AttenuationType.NONE ||
-				 category == SoundCategory.RECORDS || category == SoundCategory.MUSIC) {
+					category == SoundCategory.RECORDS || category == SoundCategory.MUSIC) {
 				// posY <= 0 as a condition has to be there: Ingame
 				// menu clicks do have a player and world present
 				// The Y position check has been removed due to problems with Cubic Chunks
@@ -620,7 +516,7 @@ public class SoundPhysics {
 			final float rcpPrimaryRays = 1.0f / numRays;
 
 			for (int i = 0; i < numRays; i++) {
-                final float fiN = (float) i / numRays;
+				final float fiN = (float) i / numRays;
 				final float longitude = gAngle * (float) i;
 				final float latitude = (float) Math.asin(fiN * 2.0f - 1.0f);
 
@@ -769,17 +665,6 @@ public class SoundPhysics {
 				sendCutoff3 *= 0.4f;
 			}
 
-			if (Config.midnightPatching && Config.midnightPatchingFix && mc.world.provider.getDimensionType().getName().equals("midnight")) {
-				// Since the patch removes the incompatble reverb, readd some reverb everywhere
-				// It's not a great fix but it works fine
-				sendGain1 = MathHelper.clamp(sendGain1, 0.3f, 1.0f);
-				sendGain2 = MathHelper.clamp(sendGain2, 0.5f, 1.0f);
-				sendGain3 = MathHelper.clamp(sendGain3, 0.7f, 1.0f);
-				sendCutoff1 = MathHelper.clamp(sendCutoff1, 0.3f, 1.0f);
-				sendCutoff2 = MathHelper.clamp(sendCutoff2, 0.5f, 1.0f);
-				sendCutoff3 = MathHelper.clamp(sendCutoff3, 0.7f, 1.0f);
-			}
-
 			setEnvironment(sourceID, sendGain0, sendGain1, sendGain2, sendGain3, sendCutoff0, sendCutoff1, sendCutoff2,
 					sendCutoff3, directCutoff, directGain, airAbsorptionFactor);
 		} catch(Exception e) {
@@ -788,18 +673,10 @@ public class SoundPhysics {
 		}
 	}
 
-	public static void setDefaultEnvironment(int sourceID) {
-		setDefaultEnvironment(sourceID, false);
-	}
-
-	public static void setDefaultEnvironment(int sourceID, boolean auxOnly) {
-		setEnvironment(sourceID, 0F, 0F, 0F, 0F, 1F, 1F, 1F, 1F, 1F,   auxOnly ? 0F : 1F, 1F);
-	}
-
 	private static void setEnvironment(final int sourceID, final float sendGain0, final float sendGain1,
-			final float sendGain2, final float sendGain3, final float sendCutoff0, final float sendCutoff1,
-			final float sendCutoff2, final float sendCutoff3, final float directCutoff, final float directGain,
-			final float airAbsorptionFactor) {
+									   final float sendGain2, final float sendGain3, final float sendCutoff0, final float sendCutoff1,
+									   final float sendCutoff2, final float sendCutoff3, final float directCutoff, final float directGain,
+									   final float airAbsorptionFactor) {
 		// Set reverb send filter values and set source to send to all reverb fx
 		// slots
 		if (maxAuxSends >= 4) {
