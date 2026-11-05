@@ -22,6 +22,7 @@ public class Config {
 	public static float reverbAttenuationDistance;
 	public static float reverbDistance;
 	public static boolean soundDirectionEvaluation;
+	public static String[] soundDirectionPositionBiasOverrides;
 	public static boolean redirectNonOccludedSounds;
 	public static float rolloffFactor;
 	public static float globalReverbGain;
@@ -312,6 +313,34 @@ public class Config {
 								"Format: namespace:sound_event_id. " +
 								"Example: minecraft:entity.generic.explode"
 				)
+		);
+
+		soundDirectionPositionBiasOverrides =
+				this.forgeConfig.getStringList(
+						"Sound Direction Position Bias",
+						categoryGeneral,
+						new String[]{
+								"minecraft:block.grass.step=85",
+								"minecraft:block.stone.step=85",
+								"minecraft:block.wood.step=85",
+								"minecraft:block.sand.step=85",
+								"minecraft:block.gravel.step=85",
+								"minecraft:block.snow.step=85",
+								"minecraft:block.metal.step=85",
+								"minecraft:block.cloth.step=85"
+						},
+						"Per-sound original position bias. " +
+								"Moves the calculated apparent sound position " +
+								"towards the original sound source position. " +
+								"Format: sound_event_id=percentage. " +
+								"0 means normal acoustic positioning, " +
+								"50 means halfway towards the original position, " +
+								"100 restores the exact original sound position. " +
+								"Example: minecraft:block.grass.step=85"
+				);
+
+		SoundDirectionPositionBias.configure(
+				soundDirectionPositionBiasOverrides
 		);
 
 

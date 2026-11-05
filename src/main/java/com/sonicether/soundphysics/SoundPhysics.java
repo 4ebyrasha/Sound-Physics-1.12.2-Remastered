@@ -1469,7 +1469,8 @@ public class SoundPhysics {
 			final ReflectedAudio reflectedAudio =
 					new ReflectedAudio(
 							occlusionAccumulation,
-							SoundDirectionExclusions.isExcluded(name)
+							SoundDirectionExclusions.isExcluded(name),
+							SoundDirectionPositionBias.getBias(name)
 					);
 
 			if (reflectedAudio.shouldEvaluateDirection()) {

@@ -25,6 +25,8 @@ public final class ReflectedAudio {
      */
     private static final double ORIGINAL_DIRECTION_BIAS = 0.32D;
 
+    private final double originalPositionBias;
+
     private final double occlusion;
 
     private final boolean directionExcluded;
@@ -40,21 +42,37 @@ public final class ReflectedAudio {
     private String resultStatus = "NOT_EVALUATED";
 
     public ReflectedAudio(double occlusion) {
-        this(occlusion, false);
+        this(occlusion, false, 0.0D);
     }
 
     public ReflectedAudio(
             double occlusion,
             boolean directionExcluded
     ) {
+        this(occlusion, directionExcluded, 0.0D);
+    }
+
+    public ReflectedAudio(
+            double occlusion,
+            boolean directionExcluded,
+            double originalPositionBias
+    ) {
         this.occlusion = occlusion;
         this.directionExcluded = directionExcluded;
+
+        this.originalPositionBias =
+                Double.isNaN(originalPositionBias) ||
+                        Double.isInfinite(originalPositionBias)
+                        ? 0.0D
+                        : Math.max(0.0D, Math.min(1.0D, originalPositionBias));
+
         this.airspaceDirections = new ArrayList<>();
     }
 
     public boolean shouldEvaluateDirection() {
 
         return !directionExcluded &&
+                originalPositionBias < 1.0D &&
                 Config.soundDirectionEvaluation &&
                 (occlusion > 0.0D ||
                         !Config.redirectNonOccludedSounds);
@@ -157,6 +175,10 @@ public final class ReflectedAudio {
 
             if (directionExcluded) {
                 resultStatus = "SKIPPED_CONFIG_EXCLUSION";
+
+            } else if (originalPositionBias >= 1.0D) {
+                resultStatus = "SKIPPED_FULL_ORIGINAL_POSITION_BIAS";
+
             } else {
                 resultStatus = Config.soundDirectionEvaluation
                         ? "SKIPPED_NOT_OCCLUDED"
@@ -370,17 +392,39 @@ public final class ReflectedAudio {
             return null;
         }
 
-        resultingDirection = finalDirection;
-
-        resultStatus = "REDIRECTED";
-
         /*
-         * Place the virtual source at the calculated apparent
-         * distance instead of the original source distance.
+         * Position calculated by acoustic direction evaluation.
          */
-        return listenerPos.add(
+        Vec3d redirectedPosition = listenerPos.add(
                 finalDirection.scale(apparentDistance)
         );
+
+        /*
+         * Blend the calculated position with the original source position.
+         *
+         * 0.0 = fully calculated acoustic position.
+         * 0.5 = halfway between calculated and original positions.
+         * 1.0 = original source position.
+         */
+        Vec3d finalPosition =
+                redirectedPosition.scale(1.0D - originalPositionBias)
+                        .add(
+                                soundPos.scale(originalPositionBias)
+                        );
+
+        Vec3d finalOffset =
+                finalPosition.subtract(listenerPos);
+
+        resultingDirection =
+                finalOffset.lengthSquared() > 1.0E-8D
+                        ? finalOffset.normalize()
+                        : finalDirection;
+
+        resultStatus = originalPositionBias > 0.0D
+                ? "REDIRECTED_WITH_ORIGINAL_POSITION_BIAS"
+                : "REDIRECTED";
+
+        return finalPosition;
     }
 
     public int getSampleCount() {
