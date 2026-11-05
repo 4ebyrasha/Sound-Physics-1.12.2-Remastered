@@ -13,6 +13,9 @@ import net.minecraftforge.fml.common.event.FMLInitializationEvent;
 import net.minecraftforge.fml.common.event.FMLPreInitializationEvent;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
+
 public class Config {
 
 	public static final Config instance;
@@ -109,17 +112,73 @@ public class Config {
 		}
 	}
 
-	static String getBlacklist() {
-		StringBuilder blacklist = new StringBuilder();
 
-		for (String entry : downMixBlacklist) {
-			blacklist.append(entry).append("|");
+	static String getBlacklist() {
+
+		if (downMixBlacklist == null ||
+				downMixBlacklist.length == 0) {
+			return "(?!)";
 		}
 
-		blacklist.deleteCharAt(blacklist.length() - 1);
+		final StringBuilder blacklist =
+				new StringBuilder();
+
+		for (String entry : downMixBlacklist) {
+
+			if (entry == null) {
+				continue;
+			}
+
+			final String pattern = entry.trim();
+
+			if (pattern.isEmpty()) {
+				continue;
+			}
+
+			/*
+			 * Validate entries individually so one invalid
+			 * expression cannot prevent the sound system
+			 * from initializing.
+			 */
+			try {
+
+				Pattern.compile(pattern);
+
+			} catch (PatternSyntaxException e) {
+
+				SoundPhysics.logger.warn(
+						"Ignoring invalid Downmix Blacklist pattern '{}': {}",
+						pattern,
+						e.getMessage()
+				);
+
+				continue;
+			}
+
+			if (blacklist.length() > 0) {
+				blacklist.append('|');
+			}
+
+			/*
+			 * Group each expression to preserve its own
+			 * alternation and anchor behavior.
+			 */
+			blacklist.append("(?:")
+					.append(pattern)
+					.append(')');
+		}
+
+		/*
+		 * A never-matching expression is used instead of
+		 * compiling an empty string or deleting the last character.
+		 */
+		if (blacklist.length() == 0) {
+			return "(?!)";
+		}
 
 		return blacklist.toString();
 	}
+
 
 	public List<IConfigElement> getConfigElements() {
 		final ArrayList<IConfigElement> list = new ArrayList<IConfigElement>();

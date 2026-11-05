@@ -9,6 +9,7 @@
   ],
   "client": [
     "MixinALContext",
+    "MixinChannelLWJGLOpenAL",
     "MixinLibraryLWJGLOpenAL",
     "MixinSoundManager",
     "MixinSoundSystem",

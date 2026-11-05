@@ -90,6 +90,10 @@ public class SoundPhysics {
 
 	private static boolean efxAvailable;
 
+	private static volatile ALCcontext efxContext;
+
+	private static volatile boolean reverbConfigDirty = true;
+
 	private static final ConcurrentHashMap<
 			ALCcontext,
 			ConcurrentHashMap<Integer, SourceFilters>
@@ -100,8 +104,12 @@ public class SoundPhysics {
 	private static SoundCategory lastSoundCategory;
 	private static String lastSoundName;
 	private static ISound.AttenuationType lastSoundAtt;
+	private static final ConcurrentHashMap<Integer, Vec3d> SOUND_POSITION_OFFSETS =
+			new ConcurrentHashMap<>();
 	private static final Map<String, SoundSourceData> SOUND_SOURCES =
 			new ConcurrentHashMap<>();
+
+
 
 	private static final class SourceFilters {
 
@@ -114,14 +122,55 @@ public class SoundPhysics {
 
 		private SourceFilters() {
 
-			directFilter = createLowPassFilter();
+			int direct = 0;
 
-			sendFilter0 = createLowPassFilter();
-			sendFilter1 = createLowPassFilter();
-			sendFilter2 = createLowPassFilter();
-			sendFilter3 = createLowPassFilter();
+			int send0 = 0;
+			int send1 = 0;
+			int send2 = 0;
+			int send3 = 0;
+
+			try {
+
+				direct = createLowPassFilter();
+
+				if (maxAuxSends >= 4) {
+					send0 = createLowPassFilter();
+				}
+
+				if (maxAuxSends >= 3) {
+					send1 = createLowPassFilter();
+				}
+
+				if (maxAuxSends >= 2) {
+					send2 = createLowPassFilter();
+				}
+
+				if (maxAuxSends >= 1) {
+					send3 = createLowPassFilter();
+				}
+
+			} catch (RuntimeException | Error e) {
+
+				deleteFilterQuietly(direct);
+
+				deleteFilterQuietly(send0);
+				deleteFilterQuietly(send1);
+				deleteFilterQuietly(send2);
+				deleteFilterQuietly(send3);
+
+				throw e;
+			}
+
+			directFilter = direct;
+
+			sendFilter0 = send0;
+			sendFilter1 = send1;
+			sendFilter2 = send2;
+			sendFilter3 = send3;
 		}
 	}
+
+
 
 	private static final class SoundSourceData {
 
@@ -169,29 +218,110 @@ public class SoundPhysics {
 		}
 	}
 
-	public static void applyConfigChanges() {
-		globalRolloffFactor = Config.rolloffFactor;
-		globalReverbMultiplier = 0.7f * Config.globalReverbGain;
-		soundDistanceAllowance = Config.soundDistanceAllowance;
-		globalVolumeMultiplier = Config.globalVolumeMultiplier;
 
-		if (auxFXSlot0 != 0) {
-			// Set the global reverb parameters and apply them to the effect and
-			// effectslot
-			setReverbParams(ReverbParams.getReverb0(), auxFXSlot0, reverb0);
-			setReverbParams(ReverbParams.getReverb1(), auxFXSlot1, reverb1);
-			setReverbParams(ReverbParams.getReverb2(), auxFXSlot2, reverb2);
-			setReverbParams(ReverbParams.getReverb3(), auxFXSlot3, reverb3);
-		}
+	public static void applyConfigChanges() {
+
+		globalRolloffFactor = Config.rolloffFactor;
+
+		globalReverbMultiplier =
+				0.7f * Config.globalReverbGain;
+
+		soundDistanceAllowance =
+				Config.soundDistanceAllowance;
+
+		globalVolumeMultiplier =
+				Config.globalVolumeMultiplier;
+
+		/*
+		 * Configuration events can be fired from the client thread,
+		 * where the OpenAL context is not necessarily current.
+		 *
+		 * Mark the reverb settings dirty and apply them when
+		 * the correct OpenAL context becomes current.
+		 */
+		reverbConfigDirty = true;
+
+		applyReverbConfigIfPossible();
 	}
 
+	/**
+	 * Applies pending reverb configuration only when the OpenAL
+	 * context owning the effect slots is current on this thread.
+	 */
+	private static void applyReverbConfigIfPossible() {
+
+		if (!efxAvailable ||
+				efxContext == null ||
+				auxFXSlot0 == 0 ||
+				!reverbConfigDirty) {
+			return;
+		}
+
+		final ALCcontext currentContext =
+				ALC10.alcGetCurrentContext();
+
+		if (currentContext != efxContext) {
+			return;
+		}
+
+		setReverbParams(
+				ReverbParams.getReverb0(),
+				auxFXSlot0,
+				reverb0
+		);
+
+		setReverbParams(
+				ReverbParams.getReverb1(),
+				auxFXSlot1,
+				reverb1
+		);
+
+		setReverbParams(
+				ReverbParams.getReverb2(),
+				auxFXSlot2,
+				reverb2
+		);
+
+		setReverbParams(
+				ReverbParams.getReverb3(),
+				auxFXSlot3,
+				reverb3
+		);
+
+		reverbConfigDirty = false;
+	}
+
+
+
 	private static int createLowPassFilter() {
+
+		/*
+		 * Do not let an earlier unrelated OpenAL error
+		 * be attributed to this allocation.
+		 */
+		AL10.alGetError();
 
 		final int filter = EFX10.alGenFilters();
 
 		if (filter == 0) {
+
+			checkErrorLog(
+					"OpenAL failed to allocate an EFX filter."
+			);
+
 			throw new IllegalStateException(
-					"OpenAL failed to create an EFX low-pass filter."
+					"OpenAL returned filter ID 0."
+			);
+		}
+
+		if (checkErrorLog(
+				"OpenAL error while allocating an EFX filter."
+		)) {
+
+			deleteFilterQuietly(filter);
+
+			throw new IllegalStateException(
+					"Failed to allocate an EFX filter."
 			);
 		}
 
@@ -201,12 +331,53 @@ public class SoundPhysics {
 				EFX10.AL_FILTER_LOWPASS
 		);
 
+		if (checkErrorLog(
+				"OpenAL error while configuring an EFX low-pass filter."
+		)) {
+
+			deleteFilterQuietly(filter);
+
+			throw new IllegalStateException(
+					"Failed to configure an EFX low-pass filter."
+			);
+		}
+
 		return filter;
 	}
+
+
+	private static void applyMovingSoundPositionOffset(
+			int sourceID,
+			float posX,
+			float posY,
+			float posZ
+	) {
+
+		if (sourceID <= 0) {
+			return;
+		}
+
+		final Vec3d offset =
+				SOUND_POSITION_OFFSETS.get(sourceID);
+
+		if (offset == null) {
+			return;
+		}
+
+		final Vec3d originalPosition =
+				new Vec3d(posX, posY, posZ);
+
+		setSoundPos(
+				sourceID,
+				originalPosition.add(offset)
+		);
+	}
+
 
 	private static SourceFilters getSourceFilters(
 			final int sourceID
 	) {
+
 		if (!efxAvailable || sourceID <= 0) {
 			return null;
 		}
@@ -214,7 +385,12 @@ public class SoundPhysics {
 		final ALCcontext context =
 				ALC10.alcGetCurrentContext();
 
-		if (context == null) {
+		/*
+		 * Filter IDs and auxiliary slots belong to a specific
+		 * OpenAL context. Never use them in another context.
+		 */
+		if (context == null ||
+				context != efxContext) {
 			return null;
 		}
 
@@ -223,10 +399,10 @@ public class SoundPhysics {
 
 		if (contextFilters == null) {
 
-			ConcurrentHashMap<Integer, SourceFilters> newContextFilters =
+			final ConcurrentHashMap<Integer, SourceFilters> newContextFilters =
 					new ConcurrentHashMap<>();
 
-			ConcurrentHashMap<Integer, SourceFilters> existing =
+			final ConcurrentHashMap<Integer, SourceFilters> existing =
 					SOURCE_FILTERS.putIfAbsent(
 							context,
 							newContextFilters
@@ -237,16 +413,13 @@ public class SoundPhysics {
 					: newContextFilters;
 		}
 
-		SourceFilters filters = contextFilters.get(sourceID);
+		SourceFilters filters =
+				contextFilters.get(sourceID);
 
 		if (filters != null) {
 			return filters;
 		}
 
-		/*
-		 * Create filters only once for each physical OpenAL source
-		 * within the current OpenAL context.
-		 */
 		synchronized (contextFilters) {
 
 			filters = contextFilters.get(sourceID);
@@ -262,13 +435,17 @@ public class SoundPhysics {
 							filters
 					);
 
-				} catch (Throwable e) {
+				} catch (RuntimeException | LinkageError e) {
 
 					logger.error(
 							"Failed to create EFX filters for OpenAL source {}",
 							sourceID,
 							e
 					);
+
+					if (contextFilters.isEmpty()) {
+						SOURCE_FILTERS.remove(context, contextFilters);
+					}
 
 					return null;
 				}
@@ -278,26 +455,44 @@ public class SoundPhysics {
 		return filters;
 	}
 
+
+
 	private static void setupEFX() {
+
+		efxAvailable = false;
+		maxAuxSends = 0;
+
+		efxContext = null;
+		reverbConfigDirty = true;
 
 		final ALCcontext currentContext =
 				ALC10.alcGetCurrentContext();
 
 		if (currentContext == null) {
-			efxAvailable = false;
-			logError("No current OpenAL context. EFX initialization aborted.");
+
+			logError(
+					"No current OpenAL context. EFX initialization aborted."
+			);
+
 			return;
 		}
 
 		final ALCdevice currentDevice =
 				ALC10.alcGetContextsDevice(currentContext);
 
+		if (currentDevice == null) {
+
+			logError(
+					"No OpenAL device found. EFX initialization aborted."
+			);
+
+			return;
+		}
+
 		if (!ALC10.alcIsExtensionPresent(
 				currentDevice,
 				"ALC_EXT_EFX"
 		)) {
-
-			efxAvailable = false;
 
 			logError(
 					"EFX Extension not found on current device. Aborting."
@@ -306,91 +501,131 @@ public class SoundPhysics {
 			return;
 		}
 
-		efxAvailable = true;
+		int slot0 = 0;
+		int slot1 = 0;
+		int slot2 = 0;
+		int slot3 = 0;
 
-		log("EFX Extension recognized.");
+		int effect0 = 0;
+		int effect1 = 0;
+		int effect2 = 0;
+		int effect3 = 0;
 
-		IntBuffer buffer = BufferUtils.createIntBuffer(1);
+		try {
 
-		ALC10.alcGetInteger(
-				currentDevice,
-				EFX10.ALC_MAX_AUXILIARY_SENDS,
-				buffer
-		);
+			/*
+			 * Query the number of auxiliary sends supported
+			 * by the current OpenAL device.
+			 */
+			ALC10.alcGetError(currentDevice);
 
-		maxAuxSends = buffer.get(0);
+			final IntBuffer buffer =
+					BufferUtils.createIntBuffer(1);
 
-		log("Max auxiliary sends: " + maxAuxSends);
+			ALC10.alcGetInteger(
+					currentDevice,
+					EFX10.ALC_MAX_AUXILIARY_SENDS,
+					buffer
+			);
 
-		// Create auxiliary effect slots.
-		auxFXSlot0 = EFX10.alGenAuxiliaryEffectSlots();
-		log("Aux slot " + auxFXSlot0 + " created");
-		EFX10.alAuxiliaryEffectSloti(
-				auxFXSlot0,
-				EFX10.AL_EFFECTSLOT_AUXILIARY_SEND_AUTO,
-				AL10.AL_TRUE
-		);
+			final int alcError =
+					ALC10.alcGetError(currentDevice);
 
-		auxFXSlot1 = EFX10.alGenAuxiliaryEffectSlots();
-		log("Aux slot " + auxFXSlot1 + " created");
-		EFX10.alAuxiliaryEffectSloti(
-				auxFXSlot1,
-				EFX10.AL_EFFECTSLOT_AUXILIARY_SEND_AUTO,
-				AL10.AL_TRUE
-		);
+			if (alcError != ALC10.ALC_NO_ERROR) {
 
-		auxFXSlot2 = EFX10.alGenAuxiliaryEffectSlots();
-		log("Aux slot " + auxFXSlot2 + " created");
-		EFX10.alAuxiliaryEffectSloti(
-				auxFXSlot2,
-				EFX10.AL_EFFECTSLOT_AUXILIARY_SEND_AUTO,
-				AL10.AL_TRUE
-		);
+				throw new IllegalStateException(
+						"Failed to query EFX auxiliary sends. ALC error: " +
+								alcError
+				);
+			}
 
-		auxFXSlot3 = EFX10.alGenAuxiliaryEffectSlots();
-		log("Aux slot " + auxFXSlot3 + " created");
-		EFX10.alAuxiliaryEffectSloti(
-				auxFXSlot3,
-				EFX10.AL_EFFECTSLOT_AUXILIARY_SEND_AUTO,
-				AL10.AL_TRUE
-		);
+			maxAuxSends = Math.max(0, buffer.get(0));
 
-		checkErrorLog("Failed creating auxiliary effect slots!");
+			log(
+					"Max auxiliary sends: " + maxAuxSends
+			);
 
-		reverb0 = EFX10.alGenEffects();
-		EFX10.alEffecti(
-				reverb0,
-				EFX10.AL_EFFECT_TYPE,
-				EFX10.AL_EFFECT_EAXREVERB
-		);
-		checkErrorLog("Failed creating reverb effect slot 0!");
+			/*
+			 * Allocate all effect slots.
+			 *
+			 * The existing routing uses up to four auxiliary sends.
+			 */
+			slot0 = createAuxiliaryEffectSlot();
+			slot1 = createAuxiliaryEffectSlot();
+			slot2 = createAuxiliaryEffectSlot();
+			slot3 = createAuxiliaryEffectSlot();
 
-		reverb1 = EFX10.alGenEffects();
-		EFX10.alEffecti(
-				reverb1,
-				EFX10.AL_EFFECT_TYPE,
-				EFX10.AL_EFFECT_EAXREVERB
-		);
-		checkErrorLog("Failed creating reverb effect slot 1!");
+			/*
+			 * Allocate the four reverb effects.
+			 */
+			effect0 = createReverbEffect();
+			effect1 = createReverbEffect();
+			effect2 = createReverbEffect();
+			effect3 = createReverbEffect();
 
-		reverb2 = EFX10.alGenEffects();
-		EFX10.alEffecti(
-				reverb2,
-				EFX10.AL_EFFECT_TYPE,
-				EFX10.AL_EFFECT_EAXREVERB
-		);
-		checkErrorLog("Failed creating reverb effect slot 2!");
+			/*
+			 * Publish the new handles only after every allocation
+			 * has completed successfully.
+			 */
+			auxFXSlot0 = slot0;
+			auxFXSlot1 = slot1;
+			auxFXSlot2 = slot2;
+			auxFXSlot3 = slot3;
 
-		reverb3 = EFX10.alGenEffects();
-		EFX10.alEffecti(
-				reverb3,
-				EFX10.AL_EFFECT_TYPE,
-				EFX10.AL_EFFECT_EAXREVERB
-		);
-		checkErrorLog("Failed creating reverb effect slot 3!");
+			reverb0 = effect0;
+			reverb1 = effect1;
+			reverb2 = effect2;
+			reverb3 = effect3;
 
-		applyConfigChanges();
+			efxContext = currentContext;
+
+			efxAvailable = true;
+
+			log("EFX Extension recognized and initialized.");
+
+			applyConfigChanges();
+
+		} catch (Throwable e) {
+
+			efxContext = null;
+
+			reverbConfigDirty = true;
+
+			/*
+			 * Roll back partially created resources.
+			 *
+			 * Effects must be deleted before their auxiliary slots.
+			 */
+			deleteReverbEffectQuietly(effect3);
+			deleteReverbEffectQuietly(effect2);
+			deleteReverbEffectQuietly(effect1);
+			deleteReverbEffectQuietly(effect0);
+
+			deleteAuxiliaryEffectSlotQuietly(slot3);
+			deleteAuxiliaryEffectSlotQuietly(slot2);
+			deleteAuxiliaryEffectSlotQuietly(slot1);
+			deleteAuxiliaryEffectSlotQuietly(slot0);
+
+			auxFXSlot0 = 0;
+			auxFXSlot1 = 0;
+			auxFXSlot2 = 0;
+			auxFXSlot3 = 0;
+
+			reverb0 = 0;
+			reverb1 = 0;
+			reverb2 = 0;
+			reverb3 = 0;
+
+			maxAuxSends = 0;
+			efxAvailable = false;
+
+			logger.error(
+					"Failed to initialize EFX. Sound Physics will continue without EFX.",
+					e
+			);
+		}
 	}
+
 
 	private static SoundCategory getSoundCategory(final SoundCategory sc, final String name) {
 		if (Config.noteBlockEnable && sc == SoundCategory.RECORDS && noteBlockPattern.matcher(name).matches()) {
@@ -517,35 +752,198 @@ public class SoundPhysics {
 	/**
 	 * CALLED BY ASM INJECTED CODE!
 	 */
-	public static SoundBuffer onLoadSound(SoundBuffer buff, String filename) {
-		if (buff == null || buff.audioFormat.getChannels() == 1 || !Config.autoSteroDownmix) return buff;
-		if (mc == null || mc.player == null || mc.world == null || lastSoundCategory == SoundCategory.RECORDS || lastSoundCategory == SoundCategory.MUSIC ||
-				allPattern.matcher(filename).matches()) {
-			if (Config.autoSteroDownmixLogging) log("Not converting sound '"+filename+"'("+buff.audioFormat.toString()+")");
+	public static SoundBuffer onLoadSound(
+			SoundBuffer buff,
+			String filename
+	) {
+
+		if (buff == null ||
+				buff.audioData == null ||
+				buff.audioFormat == null ||
+				!Config.autoSteroDownmix ||
+				buff.audioFormat.getChannels() != 2) {
 			return buff;
 		}
-		AudioFormat orignalformat = buff.audioFormat;
-		int bits = orignalformat.getSampleSizeInBits();
-		boolean bigendian = orignalformat.isBigEndian();
-		AudioFormat monoformat = new AudioFormat(orignalformat.getEncoding(), orignalformat.getSampleRate(), bits,
-				1, orignalformat.getFrameSize(), orignalformat.getFrameRate(), bigendian);
-		if (Config.autoSteroDownmixLogging) log("Converting sound '"+filename+"'("+ orignalformat +") to mono ("+ monoformat +")");
 
-		ByteBuffer bb = ByteBuffer.wrap(buff.audioData,0,buff.audioData.length);
-		bb.order(bigendian ? ByteOrder.BIG_ENDIAN : ByteOrder.LITTLE_ENDIAN);
-		if (bits == 8) {
-			for (int i = 0; i < buff.audioData.length; i+=2) {
-				bb.put(i/2,(byte)((bb.get(i)+bb.get(i+1))/2));
+		if (mc == null ||
+				mc.player == null ||
+				mc.world == null ||
+				lastSoundCategory == SoundCategory.RECORDS ||
+				lastSoundCategory == SoundCategory.MUSIC ||
+				filename == null ||
+				allPattern.matcher(filename).matches()) {
+
+			if (Config.autoSteroDownmixLogging) {
+
+				log(
+						"Not converting sound '" +
+								filename +
+								"' (" +
+								buff.audioFormat +
+								")"
+				);
 			}
-		} else if (bits == 16) {
-			for (int i = 0; i < buff.audioData.length; i+=4) {
-				bb.putShort((i/2),(short)((bb.getShort(i)+bb.getShort(i+2))/2));
+
+			return buff;
+		}
+
+		final AudioFormat originalFormat =
+				buff.audioFormat;
+
+		final int bits =
+				originalFormat.getSampleSizeInBits();
+
+		if (bits != 8 && bits != 16) {
+			return buff;
+		}
+
+		final int bytesPerSample = bits / 8;
+
+		final int expectedFrameSize =
+				bytesPerSample * 2;
+
+		/*
+		 * Do not process formats with an unknown or unexpected
+		 * frame layout.
+		 */
+		if (originalFormat.getFrameSize() != expectedFrameSize ||
+				buff.audioData.length == 0 ||
+				buff.audioData.length % expectedFrameSize != 0) {
+			return buff;
+		}
+
+		final AudioFormat.Encoding encoding =
+				originalFormat.getEncoding();
+
+		final boolean signed =
+				AudioFormat.Encoding.PCM_SIGNED.equals(encoding);
+
+		final boolean unsigned =
+				AudioFormat.Encoding.PCM_UNSIGNED.equals(encoding);
+
+		/*
+		 * Compressed audio and floating-point PCM are not modified.
+		 */
+		if (!signed && !unsigned) {
+			return buff;
+		}
+
+		final boolean bigEndian =
+				originalFormat.isBigEndian();
+
+		final int frameCount =
+				buff.audioData.length / expectedFrameSize;
+
+		final int outputLength =
+				frameCount * bytesPerSample;
+
+		final ByteBuffer data =
+				ByteBuffer.wrap(buff.audioData);
+
+		data.order(
+				bigEndian
+						? ByteOrder.BIG_ENDIAN
+						: ByteOrder.LITTLE_ENDIAN
+		);
+
+		if (bits == 8) {
+
+			/*
+			 * Compact stereo 8-bit samples in place.
+			 *
+			 * Unsigned PCM uses the full 0..255 sample range.
+			 * Signed PCM uses the -128..127 range.
+			 */
+			for (int frame = 0; frame < frameCount; frame++) {
+
+				final int inputOffset =
+						frame * expectedFrameSize;
+
+				final int outputOffset = frame;
+
+				final int left = unsigned
+						? buff.audioData[inputOffset] & 0xFF
+						: buff.audioData[inputOffset];
+
+				final int right = unsigned
+						? buff.audioData[inputOffset + 1] & 0xFF
+						: buff.audioData[inputOffset + 1];
+
+				final int mixed =
+						(left + right) / 2;
+
+				buff.audioData[outputOffset] =
+						(byte) mixed;
+			}
+
+		} else {
+
+			/*
+			 * Compact stereo 16-bit samples in place.
+			 *
+			 * Unsigned PCM samples are converted to the
+			 * 0..65535 range before averaging.
+			 */
+			for (int frame = 0; frame < frameCount; frame++) {
+
+				final int inputOffset =
+						frame * expectedFrameSize;
+
+				final int outputOffset =
+						frame * bytesPerSample;
+
+				int left =
+						data.getShort(inputOffset);
+
+				int right =
+						data.getShort(inputOffset + bytesPerSample);
+
+				if (unsigned) {
+
+					left &= 0xFFFF;
+					right &= 0xFFFF;
+				}
+
+				final int mixed =
+						(left + right) / 2;
+
+				data.putShort(
+						outputOffset,
+						(short) mixed
+				);
 			}
 		}
-		buff.audioFormat = monoformat;
-		buff.trimData(buff.audioData.length/2);
+
+		final AudioFormat monoFormat = new AudioFormat(
+				encoding,
+				originalFormat.getSampleRate(),
+				bits,
+				1,
+				bytesPerSample,
+				originalFormat.getFrameRate(),
+				bigEndian
+		);
+
+		buff.audioFormat = monoFormat;
+
+		buff.trimData(outputLength);
+
+		if (Config.autoSteroDownmixLogging) {
+
+			log(
+					"Converted sound '" +
+							filename +
+							"' from stereo (" +
+							originalFormat +
+							") to mono (" +
+							monoFormat +
+							")"
+			);
+		}
+
 		return buff;
 	}
+
 
 	/**
 	 * CALLED BY ASM INJECTED CODE!
@@ -653,6 +1051,7 @@ public class SoundPhysics {
 	/**
 	 * Reevaluates a moving sound source periodically.
 	 */
+
 	public static void onMovingSoundPosition(
 			String sourceName,
 			float posX,
@@ -660,16 +1059,26 @@ public class SoundPhysics {
 			float posZ,
 			int sourceID
 	) {
-		SoundSourceData data = SOUND_SOURCES.get(sourceName);
+
+		final SoundSourceData data =
+				SOUND_SOURCES.get(sourceName);
 
 		if (data == null || !data.moving) {
 			return;
 		}
 
-		// When disabled, restore the original sound environment once.
+		/*
+		 * When periodic processing is disabled,
+		 * restore the original source position.
+		 */
 		if (!Config.updateMovingSounds) {
+
+			SOUND_POSITION_OFFSETS.remove(sourceID);
+
 			if (data.acousticsEnabled) {
+
 				setDefaultEnvironment(sourceID);
+
 				data.acousticsEnabled = false;
 			}
 
@@ -677,34 +1086,69 @@ public class SoundPhysics {
 		}
 
 		if (mc == null || mc.world == null) {
+
+			SOUND_POSITION_OFFSETS.remove(sourceID);
+
 			return;
 		}
 
-		long currentTick = getCurrentWorldTime();
+		final long currentTick =
+				getCurrentWorldTime();
 
 		if (currentTick == Long.MIN_VALUE) {
+			SOUND_POSITION_OFFSETS.remove(sourceID);
 			return;
 		}
 
-		long lastTick = data.lastEvaluationTick;
-
-		int updateInterval = Math.max(
+		final int updateInterval = Math.max(
 				1,
 				Config.soundUpdateInterval
 		);
 
-		// Initialize or recover the timer after a world change.
-		if (lastTick == Long.MIN_VALUE || currentTick < lastTick) {
+		final long lastTick =
+				data.lastEvaluationTick;
+
+		/*
+		 * Initialize or recover the timer after a world change.
+		 * Preserve the last calculated apparent position.
+		 */
+		if (lastTick == Long.MIN_VALUE ||
+				currentTick < lastTick) {
+
 			data.lastEvaluationTick = currentTick;
+
+			applyMovingSoundPositionOffset(
+					sourceID,
+					posX,
+					posY,
+					posZ
+			);
+
 			return;
 		}
 
+		/*
+		 * Do not repeat expensive ray tracing every time
+		 * the underlying source position changes.
+		 *
+		 * Reapply the previous calculated offset instead.
+		 */
 		if (currentTick - lastTick < updateInterval) {
+
+			applyMovingSoundPositionOffset(
+					sourceID,
+					posX,
+					posY,
+					posZ
+			);
+
 			return;
 		}
 
-		// Update before evaluation to prevent repeated processing
-		// if multiple position commands arrive during the same tick.
+		/*
+		 * Update before evaluation to prevent repeated processing
+		 * if multiple position commands arrive during the same tick.
+		 */
 		data.lastEvaluationTick = currentTick;
 
 		onPlaySound(
@@ -719,6 +1163,7 @@ public class SoundPhysics {
 
 		data.acousticsEnabled = true;
 	}
+
 
 
 
@@ -1177,13 +1622,28 @@ public class SoundPhysics {
 	 * the occlusion contribution of every block intersected by that path.
 	 */
 
+
 	private static float runOcclusion(
 			final Vec3d soundPos,
 			final Vec3d playerPos,
 			final ClientWorldSnapshot worldSnapshot
 	) {
+
 		if (Config.maxOcclusion <= 0.0f) {
 			return 0.0f;
+		}
+
+		/*
+		 * Do not interpret an incomplete snapshot path as open air.
+		 *
+		 * calculateOcclusion() tests several offset paths, so another
+		 * fully covered path can still provide a valid result.
+		 */
+		if (!worldSnapshot.hasChunkCoverage(
+				soundPos,
+				playerPos
+		)) {
+			return Config.maxOcclusion;
 		}
 
 		final Vec3d normalToPlayer =
@@ -1204,7 +1664,10 @@ public class SoundPhysics {
 
 			if (rayHit == null) {
 
-				// Unobstructed remainder of the occlusion ray.
+				/*
+				 * The complete path is covered, so null means
+				 * that no further block was encountered.
+				 */
 				SoundDirectionDebug.addOcclusionRay(
 						mc.world,
 						rayOrigin,
@@ -1215,8 +1678,6 @@ public class SoundPhysics {
 				break;
 			}
 
-			// Visualize the segment that intersects a block.
-			// Occlusion rays are rendered through walls.
 			SoundDirectionDebug.addOcclusionRay(
 					mc.world,
 					rayOrigin,
@@ -1224,7 +1685,8 @@ public class SoundPhysics {
 					SoundDirectionDebug.COLOR_BLOCKED
 			);
 
-			final BlockPos blockPos = rayHit.getBlockPos();
+			final BlockPos blockPos =
+					rayHit.getBlockPos();
 
 			occlusionAccumulation += getBlockOcclusion(
 					blockPos,
@@ -1237,9 +1699,9 @@ public class SoundPhysics {
 			}
 
 			rayOrigin = new Vec3d(
-					rayHit.hitVec.x + normalToPlayer.x * 0.1,
-					rayHit.hitVec.y + normalToPlayer.y * 0.1,
-					rayHit.hitVec.z + normalToPlayer.z * 0.1
+					rayHit.hitVec.x + normalToPlayer.x * 0.1D,
+					rayHit.hitVec.y + normalToPlayer.y * 0.1D,
+					rayHit.hitVec.z + normalToPlayer.z * 0.1D
 			);
 		}
 
@@ -1248,6 +1710,7 @@ public class SoundPhysics {
 				Config.maxOcclusion
 		);
 	}
+
 
 	/**
 	 * Filters reflections that have not travelled far enough.
@@ -1535,7 +1998,11 @@ public class SoundPhysics {
 				);
 
 				final boolean rayCoverage =
-						worldSnapshot.hasChunkCoverage(rayStart, rayEnd);
+						Config.debugSoundDirection &&
+								worldSnapshot.hasChunkCoverage(
+										rayStart,
+										rayEnd
+								);
 
 				final RayTraceResult rayHit =
 						worldSnapshot.rayTraceBlocks(
@@ -1623,10 +2090,11 @@ public class SoundPhysics {
 					);
 
 					final boolean bounceCoverage =
-							worldSnapshot.hasChunkCoverage(
-									newRayStart,
-									newRayEnd
-							);
+							Config.debugSoundDirection &&
+									worldSnapshot.hasChunkCoverage(
+											newRayStart,
+											newRayEnd
+									);
 
 					final RayTraceResult newRayHit =
 							worldSnapshot.rayTraceBlocks(
@@ -1764,6 +2232,7 @@ public class SoundPhysics {
 				}
 			}
 
+
 			final Vec3d redirectedSoundPos =
 					reflectedAudio.evaluateSoundPosition(
 							soundPos,
@@ -1771,7 +2240,30 @@ public class SoundPhysics {
 					);
 
 			if (redirectedSoundPos != null) {
-				setSoundPos(sourceID, redirectedSoundPos);
+
+				setSoundPos(
+						sourceID,
+						redirectedSoundPos
+				);
+
+				/*
+				 * Store the apparent position relative to the original
+				 * source coordinates.
+				 *
+				 * Moving sounds can reuse this offset between
+				 * full acoustic evaluations.
+				 */
+				final Vec3d originalPosition =
+						new Vec3d(posX, posY, posZ);
+
+				SOUND_POSITION_OFFSETS.put(
+						sourceID,
+						redirectedSoundPos.subtract(originalPosition)
+				);
+
+			} else {
+
+				SOUND_POSITION_OFFSETS.remove(sourceID);
 			}
 
 			directionDebug.finish(
@@ -1780,6 +2272,7 @@ public class SoundPhysics {
 					sourceID,
 					occlusionAccumulation
 			);
+
 
 			bounceReflectivityRatio[0] /= numRays;
 			bounceReflectivityRatio[1] /= numRays;
@@ -1943,95 +2436,425 @@ public class SoundPhysics {
 		}
 	}
 
-	private static void setEnvironment(final int sourceID,
-									   final float sendGain0, final float sendGain1,
-									   final float sendGain2, final float sendGain3,
-									   final float sendCutoff0, final float sendCutoff1,
-									   final float sendCutoff2, final float sendCutoff3,
-									   final float directCutoff, final float directGain,
-									   final float airAbsorptionFactor) {
 
-		final SourceFilters filters = getSourceFilters(sourceID);
+	private static void setEnvironment(
+			final int sourceID,
+			final float sendGain0,
+			final float sendGain1,
+			final float sendGain2,
+			final float sendGain3,
+			final float sendCutoff0,
+			final float sendCutoff1,
+			final float sendCutoff2,
+			final float sendCutoff3,
+			final float directCutoff,
+			final float directGain,
+			final float airAbsorptionFactor
+	) {
+
+		try {
+
+			applyReverbConfigIfPossible();
+
+			final SourceFilters filters =
+					getSourceFilters(sourceID);
+
+			if (filters == null) {
+				return;
+			}
+
+			/*
+			 * Reverb send 0.
+			 */
+			if (maxAuxSends >= 4) {
+
+				EFX10.alFilterf(
+						filters.sendFilter0,
+						EFX10.AL_LOWPASS_GAIN,
+						sendGain0
+				);
+
+				EFX10.alFilterf(
+						filters.sendFilter0,
+						EFX10.AL_LOWPASS_GAINHF,
+						sendCutoff0
+				);
+
+				AL11.alSource3i(
+						sourceID,
+						EFX10.AL_AUXILIARY_SEND_FILTER,
+						auxFXSlot0,
+						3,
+						filters.sendFilter0
+				);
+			}
+
+			/*
+			 * Reverb send 1.
+			 */
+			if (maxAuxSends >= 3) {
+
+				EFX10.alFilterf(
+						filters.sendFilter1,
+						EFX10.AL_LOWPASS_GAIN,
+						sendGain1
+				);
+
+				EFX10.alFilterf(
+						filters.sendFilter1,
+						EFX10.AL_LOWPASS_GAINHF,
+						sendCutoff1
+				);
+
+				AL11.alSource3i(
+						sourceID,
+						EFX10.AL_AUXILIARY_SEND_FILTER,
+						auxFXSlot1,
+						2,
+						filters.sendFilter1
+				);
+			}
+
+			/*
+			 * Reverb send 2.
+			 */
+			if (maxAuxSends >= 2) {
+
+				EFX10.alFilterf(
+						filters.sendFilter2,
+						EFX10.AL_LOWPASS_GAIN,
+						sendGain2
+				);
+
+				EFX10.alFilterf(
+						filters.sendFilter2,
+						EFX10.AL_LOWPASS_GAINHF,
+						sendCutoff2
+				);
+
+				AL11.alSource3i(
+						sourceID,
+						EFX10.AL_AUXILIARY_SEND_FILTER,
+						auxFXSlot2,
+						1,
+						filters.sendFilter2
+				);
+			}
+
+			/*
+			 * Reverb send 3.
+			 */
+			if (maxAuxSends >= 1) {
+
+				EFX10.alFilterf(
+						filters.sendFilter3,
+						EFX10.AL_LOWPASS_GAIN,
+						sendGain3
+				);
+
+				EFX10.alFilterf(
+						filters.sendFilter3,
+						EFX10.AL_LOWPASS_GAINHF,
+						sendCutoff3
+				);
+
+				AL11.alSource3i(
+						sourceID,
+						EFX10.AL_AUXILIARY_SEND_FILTER,
+						auxFXSlot3,
+						0,
+						filters.sendFilter3
+				);
+			}
+
+			/*
+			 * Direct sound filter.
+			 */
+			EFX10.alFilterf(
+					filters.directFilter,
+					EFX10.AL_LOWPASS_GAIN,
+					directGain
+			);
+
+			EFX10.alFilterf(
+					filters.directFilter,
+					EFX10.AL_LOWPASS_GAINHF,
+					directCutoff
+			);
+
+			AL10.alSourcei(
+					sourceID,
+					EFX10.AL_DIRECT_FILTER,
+					filters.directFilter
+			);
+
+			/*
+			 * Air absorption.
+			 */
+			AL10.alSourcef(
+					sourceID,
+					EFX10.AL_AIR_ABSORPTION_FACTOR,
+					MathHelper.clamp(
+							Config.airAbsorption * airAbsorptionFactor,
+							0.0f,
+							10.0f
+					)
+			);
+
+			checkErrorLog(
+					"Error while setting environment for source: " +
+							sourceID
+			);
+
+		} catch (RuntimeException | LinkageError e) {
+
+			logger.error(
+					"Failed to apply EFX environment to OpenAL source {}",
+					sourceID,
+					e
+			);
+		}
+	}
+
+
+
+	private static int createAuxiliaryEffectSlot() {
+
+		AL10.alGetError();
+
+		final int slot =
+				EFX10.alGenAuxiliaryEffectSlots();
+
+		final boolean generationFailed =
+				checkErrorLog(
+						"Failed to create an EFX auxiliary effect slot."
+				);
+
+		if (slot == 0 || generationFailed) {
+
+			deleteAuxiliaryEffectSlotQuietly(slot);
+
+			throw new IllegalStateException(
+					"Could not create an EFX auxiliary effect slot."
+			);
+		}
+
+		EFX10.alAuxiliaryEffectSloti(
+				slot,
+				EFX10.AL_EFFECTSLOT_AUXILIARY_SEND_AUTO,
+				AL10.AL_TRUE
+		);
+
+		if (checkErrorLog(
+				"Failed to configure an EFX auxiliary effect slot."
+		)) {
+
+			deleteAuxiliaryEffectSlotQuietly(slot);
+
+			throw new IllegalStateException(
+					"Could not configure an EFX auxiliary effect slot."
+			);
+		}
+
+		return slot;
+	}
+
+	private static int createReverbEffect() {
+
+		AL10.alGetError();
+
+		final int effect = EFX10.alGenEffects();
+
+		final boolean generationFailed =
+				checkErrorLog(
+						"Failed to create an EFX reverb effect."
+				);
+
+		if (effect == 0 || generationFailed) {
+
+			deleteReverbEffectQuietly(effect);
+
+			throw new IllegalStateException(
+					"Could not create an EFX reverb effect."
+			);
+		}
+
+		EFX10.alEffecti(
+				effect,
+				EFX10.AL_EFFECT_TYPE,
+				EFX10.AL_EFFECT_EAXREVERB
+		);
+
+		if (checkErrorLog(
+				"Failed to configure an EFX reverb effect."
+		)) {
+
+			deleteReverbEffectQuietly(effect);
+
+			throw new IllegalStateException(
+					"Could not configure an EFX reverb effect."
+			);
+		}
+
+		return effect;
+	}
+
+	private static void deleteAuxiliaryEffectSlotQuietly(int slot) {
+
+		if (slot <= 0) {
+			return;
+		}
+
+		try {
+
+			EFX10.alDeleteAuxiliaryEffectSlots(slot);
+
+			AL10.alGetError();
+
+		} catch (Throwable ignored) {
+		}
+	}
+
+	private static void deleteReverbEffectQuietly(int effect) {
+
+		if (effect <= 0) {
+			return;
+		}
+
+		try {
+
+			EFX10.alDeleteEffects(effect);
+
+			AL10.alGetError();
+
+		} catch (Throwable ignored) {
+		}
+	}
+
+
+
+	/**
+	 * Releases EFX filters belonging to a deleted OpenAL source.
+	 * <p>
+	 * This is called after Paulscode deletes the physical source,
+	 * so its filter attachments no longer exist.
+	 */
+
+	public static void onOpenALSourceDestroyed(int sourceID) {
+
+		if (sourceID <= 0) {
+			return;
+		}
+
+		final ALCcontext context =
+				ALC10.alcGetCurrentContext();
+
+		if (context == null) {
+			return;
+		}
+
+		final ConcurrentHashMap<Integer, SourceFilters> contextFilters =
+				SOURCE_FILTERS.get(context);
+
+		if (contextFilters == null) {
+			return;
+		}
+
+		final SourceFilters filters =
+				contextFilters.remove(sourceID);
 
 		if (filters == null) {
 			return;
 		}
 
-		// Reverb send 0
-		if (maxAuxSends >= 4) {
-			EFX10.alFilterf(filters.sendFilter0, EFX10.AL_LOWPASS_GAIN, sendGain0);
-			EFX10.alFilterf(filters.sendFilter0, EFX10.AL_LOWPASS_GAINHF, sendCutoff0);
+		try {
 
-			AL11.alSource3i(
+			final IntBuffer filterIds =
+					BufferUtils.createIntBuffer(5);
+
+			if (filters.directFilter > 0) {
+				filterIds.put(filters.directFilter);
+			}
+
+			if (filters.sendFilter0 > 0) {
+				filterIds.put(filters.sendFilter0);
+			}
+
+			if (filters.sendFilter1 > 0) {
+				filterIds.put(filters.sendFilter1);
+			}
+
+			if (filters.sendFilter2 > 0) {
+				filterIds.put(filters.sendFilter2);
+			}
+
+			if (filters.sendFilter3 > 0) {
+				filterIds.put(filters.sendFilter3);
+			}
+
+			filterIds.flip();
+
+			if (filterIds.hasRemaining()) {
+
+				EFX10.alDeleteFilters(filterIds);
+
+				checkErrorLog(
+						"Failed to delete EFX filters for OpenAL source " +
+								sourceID
+				);
+			}
+
+		} catch (RuntimeException | LinkageError e) {
+
+			logger.warn(
+					"Failed to release EFX filters for OpenAL source {}",
 					sourceID,
-					EFX10.AL_AUXILIARY_SEND_FILTER,
-					auxFXSlot0,
-					3,
-					filters.sendFilter0
+					e
 			);
 		}
 
-		// Reverb send 1
-		if (maxAuxSends >= 3) {
-			EFX10.alFilterf(filters.sendFilter1, EFX10.AL_LOWPASS_GAIN, sendGain1);
-			EFX10.alFilterf(filters.sendFilter1, EFX10.AL_LOWPASS_GAINHF, sendCutoff1);
-
-			AL11.alSource3i(
-					sourceID,
-					EFX10.AL_AUXILIARY_SEND_FILTER,
-					auxFXSlot1,
-					2,
-					filters.sendFilter1
-			);
+		if (contextFilters.isEmpty()) {
+			SOURCE_FILTERS.remove(context, contextFilters);
 		}
-
-		// Reverb send 2
-		if (maxAuxSends >= 2) {
-			EFX10.alFilterf(filters.sendFilter2, EFX10.AL_LOWPASS_GAIN, sendGain2);
-			EFX10.alFilterf(filters.sendFilter2, EFX10.AL_LOWPASS_GAINHF, sendCutoff2);
-
-			AL11.alSource3i(
-					sourceID,
-					EFX10.AL_AUXILIARY_SEND_FILTER,
-					auxFXSlot2,
-					1,
-					filters.sendFilter2
-			);
-		}
-
-		// Reverb send 3
-		if (maxAuxSends >= 1) {
-			EFX10.alFilterf(filters.sendFilter3, EFX10.AL_LOWPASS_GAIN, sendGain3);
-			EFX10.alFilterf(filters.sendFilter3, EFX10.AL_LOWPASS_GAINHF, sendCutoff3);
-
-			AL11.alSource3i(
-					sourceID,
-					EFX10.AL_AUXILIARY_SEND_FILTER,
-					auxFXSlot3,
-					0,
-					filters.sendFilter3
-			);
-		}
-
-		// Direct sound filter
-		EFX10.alFilterf(filters.directFilter, EFX10.AL_LOWPASS_GAIN, directGain);
-		EFX10.alFilterf(filters.directFilter, EFX10.AL_LOWPASS_GAINHF, directCutoff);
-
-		AL10.alSourcei(
-				sourceID,
-				EFX10.AL_DIRECT_FILTER,
-				filters.directFilter
-		);
-
-		// Air absorption
-		AL10.alSourcef(
-				sourceID,
-				EFX10.AL_AIR_ABSORPTION_FACTOR,
-				MathHelper.clamp(Config.airAbsorption * airAbsorptionFactor, 0.0f, 10.0f)
-		);
-
-		checkErrorLog("Error while setting environment for source: " + sourceID);
 	}
+
+
+	/**
+	 * Releases Java references to EFX objects before the OpenAL
+	 * context is destroyed.
+	 * <p>
+	 * Native EFX objects are owned by the OpenAL context and are
+	 * destroyed automatically with it.
+	 */
+	public static void onOpenALContextDestroy() {
+
+		efxContext = null;
+
+		reverbConfigDirty = true;
+
+		SOURCE_FILTERS.clear();
+
+		SOUND_SOURCES.clear();
+
+		efxAvailable = false;
+
+		maxAuxSends = 0;
+
+		auxFXSlot0 = 0;
+		auxFXSlot1 = 0;
+		auxFXSlot2 = 0;
+		auxFXSlot3 = 0;
+
+		reverb0 = 0;
+		reverb1 = 0;
+		reverb2 = 0;
+		reverb3 = 0;
+
+		lastSoundCategory = null;
+		lastSoundName = null;
+		lastSoundAtt = null;
+	}
+
 
 	/**
 	 * Applies the parameters in the enum ReverbParams to the main reverb
@@ -2127,5 +2950,28 @@ public class SoundPhysics {
 		logError(errorMessage + " OpenAL error " + errorName);
 		return true;
 	}
+
+	private static void deleteFilterQuietly(int filter) {
+
+		if (filter <= 0) {
+			return;
+		}
+
+		try {
+
+			EFX10.alDeleteFilters(filter);
+
+			AL10.alGetError();
+
+		} catch (Throwable e) {
+
+			logger.warn(
+					"Could not delete EFX filter {}",
+					filter,
+					e
+			);
+		}
+	}
+
 
 }

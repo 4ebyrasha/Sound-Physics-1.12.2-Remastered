@@ -45,6 +45,8 @@ public final class ClientWorldSnapshot implements IBlockAccess {
     private final boolean raining;
     private final float rainStrength;
 
+    private static final int MAX_RAY_TRACE_STEPS = 32768;
+
     private ClientWorldSnapshot(Map<Long, ChunkSnapshot> chunks,
                                 WorldType worldType,
                                 boolean raining,
@@ -116,37 +118,160 @@ public final class ClientWorldSnapshot implements IBlockAccess {
      * Missing chunks must not be treated as open air when
      * calculating sound direction
      */
+
+
     public boolean hasChunkCoverage(
             Vec3d start,
             Vec3d end
     ) {
-        double dx = end.x - start.x;
-        double dz = end.z - start.z;
 
-        int steps = Math.max(
-                1,
-                (int) Math.ceil(
-                        Math.max(Math.abs(dx), Math.abs(dz))
-                )
-        );
+        if (!isTraceWithinLimit(start, end)) {
+            return false;
+        }
 
-        for (int i = 0; i <= steps; i++) {
+        int chunkX = MathHelper.floor(start.x) >> 4;
+        int chunkZ = MathHelper.floor(start.z) >> 4;
 
-            double fraction = (double) i / steps;
+        final int targetChunkX =
+                MathHelper.floor(end.x) >> 4;
 
-            BlockPos pos = new BlockPos(
-                    start.x + dx * fraction,
-                    start.y + (end.y - start.y) * fraction,
-                    start.z + dz * fraction
-            );
+        final int targetChunkZ =
+                MathHelper.floor(end.z) >> 4;
 
-            if (!hasChunkAt(pos)) {
+        if (getChunkSnapshot(chunkX, chunkZ) == null ||
+                getChunkSnapshot(targetChunkX, targetChunkZ) == null) {
+            return false;
+        }
+
+        if (chunkX == targetChunkX &&
+                chunkZ == targetChunkZ) {
+            return true;
+        }
+
+        final double dx = end.x - start.x;
+        final double dz = end.z - start.z;
+
+        final int stepX = dx > 0.0D
+                ? 1
+                : dx < 0.0D ? -1 : 0;
+
+        final int stepZ = dz > 0.0D
+                ? 1
+                : dz < 0.0D ? -1 : 0;
+
+        double maxDistanceX = Double.POSITIVE_INFINITY;
+        double maxDistanceZ = Double.POSITIVE_INFINITY;
+
+        double distanceDeltaX = Double.POSITIVE_INFINITY;
+        double distanceDeltaZ = Double.POSITIVE_INFINITY;
+
+        if (stepX != 0) {
+
+            final double nextBoundaryX = stepX > 0
+                    ? ((double) chunkX + 1.0D) * 16.0D
+                    : (double) chunkX * 16.0D;
+
+            maxDistanceX =
+                    (nextBoundaryX - start.x) / dx;
+
+            distanceDeltaX =
+                    16.0D / Math.abs(dx);
+        }
+
+        if (stepZ != 0) {
+
+            final double nextBoundaryZ = stepZ > 0
+                    ? ((double) chunkZ + 1.0D) * 16.0D
+                    : (double) chunkZ * 16.0D;
+
+            maxDistanceZ =
+                    (nextBoundaryZ - start.z) / dz;
+
+            distanceDeltaZ =
+                    16.0D / Math.abs(dz);
+        }
+
+        final long maximumSteps =
+                Math.abs((long) targetChunkX - chunkX) +
+                        Math.abs((long) targetChunkZ - chunkZ) +
+                        2L;
+
+        for (long i = 0; i < maximumSteps; i++) {
+
+            if (chunkX == targetChunkX &&
+                    chunkZ == targetChunkZ) {
+                return true;
+            }
+
+            /*
+             * Match rayTraceBlocks() axis priority:
+             * Z is selected when X and Z intersections are equal.
+             */
+            if (stepZ != 0 &&
+                    (stepX == 0 || maxDistanceZ <= maxDistanceX)) {
+
+                chunkZ += stepZ;
+
+                maxDistanceZ += distanceDeltaZ;
+
+            } else if (stepX != 0) {
+
+                chunkX += stepX;
+
+                maxDistanceX += distanceDeltaX;
+
+            } else {
+
+                return false;
+            }
+
+            if (getChunkSnapshot(chunkX, chunkZ) == null) {
                 return false;
             }
         }
 
-        return true;
+        return chunkX == targetChunkX &&
+                chunkZ == targetChunkZ;
     }
+
+
+    /**
+     * Checks whether a ray can be completely processed by the DDA tracer.
+     * <p>
+     * The maximum number of visited block cells is bounded by the sum
+     * of the coordinate differences plus a small boundary allowance.
+     */
+    private static boolean isTraceWithinLimit(
+            Vec3d start,
+            Vec3d end
+    ) {
+
+        if (start == null || end == null) {
+            return false;
+        }
+
+        final double dx = Math.abs(end.x - start.x);
+        final double dy = Math.abs(end.y - start.y);
+        final double dz = Math.abs(end.z - start.z);
+
+        if (Double.isNaN(dx) ||
+                Double.isNaN(dy) ||
+                Double.isNaN(dz) ||
+                Double.isInfinite(dx) ||
+                Double.isInfinite(dy) ||
+                Double.isInfinite(dz)) {
+            return false;
+        }
+
+        final double requiredSteps =
+                Math.ceil(dx) +
+                        Math.ceil(dy) +
+                        Math.ceil(dz) +
+                        3.0D;
+
+        return requiredSteps <= MAX_RAY_TRACE_STEPS;
+    }
+
 
     private static long chunkKey(int chunkX, int chunkZ) {
         return ((long) chunkX & 0xFFFFFFFFL) | (((long) chunkZ & 0xFFFFFFFFL) << 32);
@@ -263,6 +388,7 @@ public final class ClientWorldSnapshot implements IBlockAccess {
         );
     }
 
+
     @Nullable
     public RayTraceResult rayTraceBlocks(
             Vec3d start,
@@ -270,24 +396,14 @@ public final class ClientWorldSnapshot implements IBlockAccess {
             boolean stopOnLiquid,
             @Nullable BlockPos ignoredBlock
     ) {
-        if (Double.isNaN(start.x) ||
-                Double.isNaN(start.y) ||
-                Double.isNaN(start.z) ||
-                Double.isNaN(end.x) ||
-                Double.isNaN(end.y) ||
-                Double.isNaN(end.z) ||
-                Double.isInfinite(start.x) ||
-                Double.isInfinite(start.y) ||
-                Double.isInfinite(start.z) ||
-                Double.isInfinite(end.x) ||
-                Double.isInfinite(end.y) ||
-                Double.isInfinite(end.z)) {
+
+        if (!isTraceWithinLimit(start, end)) {
             return null;
         }
 
-        int endX = MathHelper.floor(end.x);
-        int endY = MathHelper.floor(end.y);
-        int endZ = MathHelper.floor(end.z);
+        final int endX = MathHelper.floor(end.x);
+        final int endY = MathHelper.floor(end.y);
+        final int endZ = MathHelper.floor(end.z);
 
         int x = MathHelper.floor(start.x);
         int y = MathHelper.floor(start.y);
@@ -303,7 +419,6 @@ public final class ClientWorldSnapshot implements IBlockAccess {
 
         /*
          * Check the block containing the initial ray position.
-         *
          * The previously reflected block can be explicitly ignored.
          */
         if (!currentBlock.equals(ignoredBlock)) {
@@ -320,16 +435,22 @@ public final class ClientWorldSnapshot implements IBlockAccess {
             }
         }
 
+        final double totalDistance =
+                Math.ceil(Math.abs(end.x - start.x)) +
+                        Math.ceil(Math.abs(end.y - start.y)) +
+                        Math.ceil(Math.abs(end.z - start.z)) +
+                        3.0D;
+
+        final int maximumSteps =
+                (int) totalDistance;
+
         /*
-         * Minecraft 1.12.2 vanilla DDA traversal.
+         * Traverse one block boundary per iteration.
          *
-         * Unlike the previous implementation, only one axis
-         * is advanced per iteration.
-         *
-         * This is important when a ray crosses a block edge
-         * or corner.
+         * Unlike the previous fixed 200-step limit, this limit
+         * scales with the actual ray length.
          */
-        for (int steps = 0; steps <= 200; steps++) {
+        for (int steps = 0; steps < maximumSteps; steps++) {
 
             if (x == endX &&
                     y == endY &&
@@ -337,80 +458,63 @@ public final class ClientWorldSnapshot implements IBlockAccess {
                 return null;
             }
 
-            boolean advanceX = true;
-            boolean advanceY = true;
-            boolean advanceZ = true;
+            final boolean advanceX = endX != x;
+            final boolean advanceY = endY != y;
+            final boolean advanceZ = endZ != z;
 
-            double boundaryX = 999.0D;
-            double boundaryY = 999.0D;
-            double boundaryZ = 999.0D;
+            final double boundaryX = endX > x
+                    ? (double) x + 1.0D
+                    : (double) x;
 
-            if (endX > x) {
-                boundaryX = (double) x + 1.0D;
-            } else if (endX < x) {
-                boundaryX = (double) x;
-            } else {
-                advanceX = false;
-            }
+            final double boundaryY = endY > y
+                    ? (double) y + 1.0D
+                    : (double) y;
 
-            if (endY > y) {
-                boundaryY = (double) y + 1.0D;
-            } else if (endY < y) {
-                boundaryY = (double) y;
-            } else {
-                advanceY = false;
-            }
+            final double boundaryZ = endZ > z
+                    ? (double) z + 1.0D
+                    : (double) z;
 
-            if (endZ > z) {
-                boundaryZ = (double) z + 1.0D;
-            } else if (endZ < z) {
-                boundaryZ = (double) z;
-            } else {
-                advanceZ = false;
-            }
-
-            double deltaX = end.x - currentStart.x;
-            double deltaY = end.y - currentStart.y;
-            double deltaZ = end.z - currentStart.z;
+            final double deltaX = end.x - currentStart.x;
+            final double deltaY = end.y - currentStart.y;
+            final double deltaZ = end.z - currentStart.z;
 
             double distanceX = advanceX
                     ? (boundaryX - currentStart.x) / deltaX
-                    : 999.0D;
+                    : Double.POSITIVE_INFINITY;
 
             double distanceY = advanceY
                     ? (boundaryY - currentStart.y) / deltaY
-                    : 999.0D;
+                    : Double.POSITIVE_INFINITY;
 
             double distanceZ = advanceZ
                     ? (boundaryZ - currentStart.z) / deltaZ
-                    : 999.0D;
+                    : Double.POSITIVE_INFINITY;
 
             /*
-             * Prevent zero-distance boundary intersections
-             * from producing an infinite traversal loop.
+             * When starting exactly on a boundary and moving
+             * in the negative direction, the intersection distance
+             * can be negative zero.
              */
-            if (distanceX == -0.0D) {
+            if (distanceX == 0.0D) {
                 distanceX = -1.0E-4D;
             }
 
-            if (distanceY == -0.0D) {
+            if (distanceY == 0.0D) {
                 distanceY = -1.0E-4D;
             }
 
-            if (distanceZ == -0.0D) {
+            if (distanceZ == 0.0D) {
                 distanceZ = -1.0E-4D;
             }
 
-            EnumFacing enteredSide;
+            final EnumFacing enteredSide;
 
             /*
-             * Preserve vanilla axis priority:
+             * Preserve the existing axis priority:
              *
              * X if strictly closest,
              * otherwise Y if strictly closer than Z,
              * otherwise Z.
-             *
-             * Do not advance multiple axes simultaneously.
              */
             if (distanceX < distanceY &&
                     distanceX < distanceZ) {
@@ -453,8 +557,8 @@ public final class ClientWorldSnapshot implements IBlockAccess {
             /*
              * Determine the newly entered block.
              *
-             * Subtract one block on the positive-facing
-             * side when moving in a negative direction.
+             * Subtract one block on the positive-facing side
+             * when moving in a negative direction.
              */
             x = MathHelper.floor(currentStart.x)
                     - (enteredSide == EnumFacing.EAST ? 1 : 0);
@@ -476,9 +580,6 @@ public final class ClientWorldSnapshot implements IBlockAccess {
 
             /*
              * Skip the block from which the ray was reflected.
-             *
-             * This replaces the previous dependency on
-             * artificially moving the ray by 0.01 blocks.
              */
             if (currentBlock.equals(ignoredBlock)) {
                 continue;
@@ -498,6 +599,7 @@ public final class ClientWorldSnapshot implements IBlockAccess {
 
         return null;
     }
+
 
     @Nullable
     private RayTraceResult rayTraceBlock(

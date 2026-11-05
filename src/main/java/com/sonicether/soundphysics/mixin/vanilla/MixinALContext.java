@@ -1,5 +1,7 @@
+
 package com.sonicether.soundphysics.mixin.vanilla;
 
+import com.sonicether.soundphysics.SoundPhysics;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.lwjgl.BufferUtils;
@@ -10,7 +12,9 @@ import org.lwjgl.openal.EFX10;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.ModifyArgs;
+import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.invoke.arg.Args;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import java.nio.IntBuffer;
 
@@ -38,11 +42,14 @@ public abstract class MixinALContext {
         }
 
         try {
-            if (!ALC10.alcIsExtensionPresent(device, "ALC_EXT_EFX")) {
+
+            if (!ALC10.alcIsExtensionPresent(
+                    device,
+                    "ALC_EXT_EFX"
+            )) {
                 return;
             }
 
-            // Clear any previous ALC error before querying device capabilities.
             ALC10.alcGetError(device);
 
             final IntBuffer maxSendsBuffer =
@@ -57,14 +64,17 @@ public abstract class MixinALContext {
             final int queryError = ALC10.alcGetError(device);
 
             if (queryError != ALC10.ALC_NO_ERROR) {
+
                 LOGGER.warn(
                         "Could not query OpenAL auxiliary sends. ALC error: {}",
                         queryError
                 );
+
                 return;
             }
 
-            final int maxSupportedSends = maxSendsBuffer.get(0);
+            final int maxSupportedSends =
+                    maxSendsBuffer.get(0);
 
             final int requestedSends = Math.min(
                     maxSupportedSends,
@@ -91,9 +101,11 @@ public abstract class MixinALContext {
             boolean auxiliarySendsAlreadyPresent = false;
 
             if (source != null) {
+
                 source.position(0);
 
                 while (source.hasRemaining()) {
+
                     final int attribute = source.get();
 
                     if (attribute == 0) {
@@ -107,7 +119,9 @@ public abstract class MixinALContext {
                     int value = source.get();
 
                     if (attribute == EFX10.ALC_MAX_AUXILIARY_SENDS) {
+
                         value = requestedSends;
+
                         auxiliarySendsAlreadyPresent = true;
                     }
 
@@ -117,6 +131,7 @@ public abstract class MixinALContext {
             }
 
             if (!auxiliarySendsAlreadyPresent) {
+
                 modifiedAttributes.put(
                         EFX10.ALC_MAX_AUXILIARY_SENDS
                 );
@@ -126,6 +141,12 @@ public abstract class MixinALContext {
 
             modifiedAttributes.put(0);
 
+            /*
+             * Required before passing the buffer to LWJGL.
+             * The native call reads from the current position.
+             */
+            modifiedAttributes.flip();
+
             args.set(1, modifiedAttributes);
 
             LOGGER.info(
@@ -134,11 +155,26 @@ public abstract class MixinALContext {
             );
 
         } catch (Throwable e) {
-            // Never allow this optional workaround to prevent audio initialization.
+
             LOGGER.warn(
                     "Could not modify OpenAL context attributes. Using original attributes.",
                     e
             );
         }
+    }
+
+    /**
+     * Clears Java-side references before LWJGL destroys the OpenAL context.
+     *
+     * OpenAL automatically destroys the context-owned EFX objects.
+     */
+    @Inject(
+            method = "destroy()V",
+            at = @At("HEAD")
+    )
+    private static void soundphysics$beforeContextDestroy(
+            CallbackInfo ci
+    ) {
+        SoundPhysics.onOpenALContextDestroy();
     }
 }
