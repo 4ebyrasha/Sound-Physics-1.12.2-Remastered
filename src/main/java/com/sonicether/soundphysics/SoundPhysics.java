@@ -28,9 +28,6 @@ import org.apache.logging.log4j.Logger;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.openal.*;
 import paulscode.sound.*;
-import net.minecraft.client.audio.Sound;
-import java.util.concurrent.atomic.AtomicBoolean;
-
 import javax.annotation.Nullable;
 import javax.sound.sampled.AudioFormat;
 import java.nio.ByteBuffer;
@@ -74,7 +71,6 @@ public class SoundPhysics {
 		ClientWorldSnapshotManager.register();
 		SoundRateManager.register();
 		SoundDirectionDebug.register();
-		PortalSoundScheduler.register();
 	}
 
 	@Mod.EventHandler
@@ -104,14 +100,6 @@ public class SoundPhysics {
 	private static SoundCategory lastSoundCategory;
 	private static String lastSoundName;
 	private static ISound.AttenuationType lastSoundAtt;
-
-	private static final float REDIRECTED_SOUND_VOLUME = 0.50F;
-
-	private static final double MIN_REDIRECT_DISTANCE = 0.25D;
-
-	private static final ThreadLocal<SoundSourceData> CURRENT_SOUND_SOURCE =
-			new ThreadLocal<>();
-
 	private static final Map<String, SoundSourceData> SOUND_SOURCES =
 			new ConcurrentHashMap<>();
 
@@ -142,13 +130,6 @@ public class SoundPhysics {
 		private final ISound.AttenuationType attenuationType;
 		private final boolean moving;
 
-		private final ISound originalSound;
-		private final Sound selectedSound;
-		private final boolean portalCopy;
-
-		private final AtomicBoolean portalCopyScheduled =
-				new AtomicBoolean(false);
-
 		private volatile long lastEvaluationTick;
 		private volatile boolean acousticsEnabled;
 
@@ -157,31 +138,13 @@ public class SoundPhysics {
 				String soundName,
 				ISound.AttenuationType attenuationType,
 				boolean moving,
-				ISound originalSound,
-				Sound selectedSound,
-				boolean portalCopy,
 				long lastEvaluationTick
 		) {
 			this.category = category;
 			this.soundName = soundName;
 			this.attenuationType = attenuationType;
 			this.moving = moving;
-			this.originalSound = originalSound;
-			this.selectedSound = selectedSound;
-			this.portalCopy = portalCopy;
 			this.lastEvaluationTick = lastEvaluationTick;
-		}
-
-		private boolean canCreatePortalCopy() {
-
-			return !portalCopy &&
-					!moving &&
-					originalSound != null &&
-					selectedSound != null &&
-					!originalSound.canRepeat() &&
-					originalSound.getAttenuationType() != null &&
-					originalSound.getAttenuationType()
-							!= ISound.AttenuationType.NONE;
 		}
 	}
 
@@ -447,204 +410,6 @@ public class SoundPhysics {
 			final ResourceLocation eventRes,
 			final String sourceName
 	) {
-		setLastSound(
-				snd,
-				sc,
-				soundRes,
-				eventRes,
-				sourceName,
-				null
-		);
-	}
-
-	private static void evaluatePortalEnvironment(
-			final int sourceID,
-			final float posX,
-			final float posY,
-			final float posZ,
-			final SoundCategory category,
-			final String name,
-			final ISound.AttenuationType attType
-	) {
-		try {
-			final ClientWorldSnapshot worldSnapshot =
-					ClientWorldSnapshotManager.getSnapshot();
-
-			if (mc == null ||
-					mc.player == null ||
-					mc.world == null ||
-					worldSnapshot == null ||
-					category == null ||
-					category == SoundCategory.MASTER ||
-					category == SoundCategory.MUSIC ||
-					attType == null ||
-					attType == ISound.AttenuationType.NONE ||
-					(category == SoundCategory.RECORDS &&
-							!Config.updateMovingSounds)) {
-
-				setDefaultEnvironment(sourceID);
-				return;
-			}
-
-			final boolean isRain =
-					name != null && rainPattern.matcher(name).matches();
-
-			if (Config.skipRainOcclusionTracing && isRain) {
-				setDefaultEnvironment(sourceID);
-				return;
-			}
-
-			/*
-			 * These are the actual coordinates of the portal copy.
-			 *
-			 * Do not call offsetSoundByName() here:
-			 * the apparent position has already been calculated.
-			 */
-			final Vec3d portalPos = new Vec3d(
-					posX,
-					posY,
-					posZ
-			);
-
-			final Vec3d playerPos = new Vec3d(
-					mc.player.posX,
-					mc.player.posY + getPlayerEyeHeight(),
-					mc.player.posZ
-			);
-
-			/*
-			 * Evaluate the acoustic path between the portal and listener.
-			 *
-			 * This replaces the expensive full reflection simulation
-			 * performed previously for every portal copy.
-			 */
-			final float occlusionAccumulation = calculateOcclusion(
-					portalPos,
-					playerPos,
-					category,
-					name,
-					worldSnapshot
-			);
-
-			final float absorptionCoeff =
-					Config.globalBlockAbsorption * 3.0f;
-
-			float directCutoff = (float) Math.exp(
-					-occlusionAccumulation * absorptionCoeff
-			);
-
-			float directGain = (float) Math.pow(
-					directCutoff,
-					0.1
-			);
-
-			float airAbsorptionFactor = 1.0f;
-
-			/*
-			 * Preserve weather-dependent air absorption.
-			 */
-			if (Config.snowAirAbsorptionFactor > 1.0f &&
-					worldSnapshot.isRaining()) {
-
-				final Vec3d middlePos =
-						playerPos.add(portalPos).scale(0.5);
-
-				final BlockPos playerPosBlock =
-						new BlockPos(playerPos);
-
-				final BlockPos portalPosBlock =
-						new BlockPos(portalPos);
-
-				final BlockPos middlePosBlock =
-						new BlockPos(middlePos);
-
-				final int snowingPlayer =
-						isSnowingAt(
-								playerPosBlock,
-								false,
-								worldSnapshot
-						) ? 1 : 0;
-
-				final int snowingPortal =
-						isSnowingAt(
-								portalPosBlock,
-								false,
-								worldSnapshot
-						) ? 1 : 0;
-
-				final int snowingMiddle =
-						isSnowingAt(
-								middlePosBlock,
-								false,
-								worldSnapshot
-						) ? 1 : 0;
-
-				final float snowFactor =
-						snowingPlayer * 0.25f +
-								snowingMiddle * 0.5f +
-								snowingPortal * 0.25f;
-
-				airAbsorptionFactor = Math.max(
-						Config.snowAirAbsorptionFactor *
-								worldSnapshot.getRainStrength() *
-								snowFactor,
-						1.0f
-				);
-			}
-
-			if (isListenerOrSourceUnderwater(
-					posX,
-					posY,
-					posZ,
-					worldSnapshot
-			)) {
-				directCutoff *= 1.0f - Config.underwaterFilter;
-			}
-
-			/*
-			 * The portal copy receives its own direct filtering.
-			 *
-			 * Reflection simulation is intentionally omitted here
-			 * to avoid running the entire reflection system twice
-			 * for every ordinary sound event.
-			 */
-			setEnvironment(
-					sourceID,
-
-					0.0f,
-					0.0f,
-					0.0f,
-					0.0f,
-
-					1.0f,
-					1.0f,
-					1.0f,
-					1.0f,
-
-					directCutoff,
-					directGain,
-					airAbsorptionFactor
-			);
-
-		} catch (Exception e) {
-
-			logger.error(
-					"Error while evaluating portal sound environment:",
-					e
-			);
-
-			setDefaultEnvironment(sourceID);
-		}
-	}
-
-	public static void setLastSound(
-			final ISound snd,
-			final SoundCategory sc,
-			final ResourceLocation soundRes,
-			final ResourceLocation eventRes,
-			final String sourceName,
-			final Sound selectedSound
-	) {
 		lastSoundName = eventRes.toString() + "|" + soundRes.getPath();
 
 		SoundCategory actualCategory = getSoundCategory(
@@ -656,8 +421,6 @@ public class SoundPhysics {
 		lastSoundAtt = snd.getAttenuationType();
 
 		boolean moving = snd instanceof ITickableSound;
-
-		boolean portalCopy = snd instanceof RedirectedPortalSound;
 
 		// Preserve the original behavior of the global volume
 		// multiplier and stereo downmix for moving sounds.
@@ -676,9 +439,6 @@ public class SoundPhysics {
 						lastSoundName,
 						snd.getAttenuationType(),
 						moving,
-						snd,
-						selectedSound,
-						portalCopy,
 						getCurrentWorldTime()
 				)
 		);
@@ -724,37 +484,11 @@ public class SoundPhysics {
 			String soundName,
 			ISound.AttenuationType attType
 	) {
-		SoundSourceData activeSource = CURRENT_SOUND_SOURCE.get();
-
-		/*
-		 * Portal copies use a separate lightweight acoustic evaluation.
-		 *
-		 * They do not need:
-		 * - another apparent source calculation;
-		 * - another reflection direction evaluation;
-		 * - another setSoundPos call.
-		 */
-		if (activeSource != null && activeSource.portalCopy) {
-
-			evaluatePortalEnvironment(
-					sourceID,
-					posX,
-					posY,
-					posZ,
-					soundCat,
-					soundName,
-					attType
-			);
-
-			return;
-		}
-
 		boolean eligibleForRateLimit =
 				soundCat != null &&
 						soundCat != SoundCategory.MASTER &&
 						soundCat != SoundCategory.MUSIC &&
-						(soundCat != SoundCategory.RECORDS ||
-								Config.updateMovingSounds) &&
+						(soundCat != SoundCategory.RECORDS || Config.updateMovingSounds) &&
 						attType != null &&
 						attType != ISound.AttenuationType.NONE;
 
@@ -875,7 +609,6 @@ public class SoundPhysics {
 
 	public static void clearSoundSources() {
 		SOUND_SOURCES.clear();
-		PortalSoundScheduler.clear();
 	}
 
 	/**
@@ -904,30 +637,17 @@ public class SoundPhysics {
 			return;
 		}
 
-		SoundSourceData previousSource = CURRENT_SOUND_SOURCE.get();
+		onPlaySound(
+				posX,
+				posY,
+				posZ,
+				sourceID,
+				data.category,
+				data.soundName,
+				data.attenuationType
+		);
 
-		CURRENT_SOUND_SOURCE.set(data);
-
-		try {
-			onPlaySound(
-					posX,
-					posY,
-					posZ,
-					sourceID,
-					data.category,
-					data.soundName,
-					data.attenuationType
-			);
-		} finally {
-			if (previousSource == null) {
-				CURRENT_SOUND_SOURCE.remove();
-			} else {
-				CURRENT_SOUND_SOURCE.set(previousSource);
-			}
-		}
-
-		data.acousticsEnabled =
-				data.moving && Config.updateMovingSounds;
+		data.acousticsEnabled = data.moving && Config.updateMovingSounds;
 	}
 
 	/**
@@ -1239,99 +959,6 @@ public class SoundPhysics {
 			int sourceID,
 			Vec3d position
 	) {
-		SoundSourceData activeSource = CURRENT_SOUND_SOURCE.get();
-
-		/*
-		 * A portal copy must never redirect itself or create another copy.
-		 */
-		if (activeSource != null && activeSource.portalCopy) {
-			return;
-		}
-
-		/*
-		 * Double playback mode:
-		 *
-		 * The original OpenAL source must stay at its real position.
-		 * The second source is responsible for playback at the apparent position.
-		 *
-		 * If duplication is impossible, preserve the original position.
-		 * Do not silently fall back to single-source redirection.
-		 */
-		if (Config.soundDirectionEvaluation &&
-				Config.doubleSoundWithRedirect) {
-
-			if (activeSource == null) {
-
-				if (Config.debugSoundDirection) {
-					logger.warn(
-							"Cannot create portal copy for source {}: " +
-									"sound metadata is unavailable. " +
-									"Keeping original position.",
-							sourceID
-					);
-				}
-
-				return;
-			}
-
-			if (!activeSource.canCreatePortalCopy()) {
-
-				if (Config.debugSoundDirection) {
-					logger.warn(
-							"Cannot create portal copy for '{}'. " +
-									"Keeping original position.",
-							activeSource.soundName
-					);
-				}
-
-				return;
-			}
-
-			Vec3d originalPosition = new Vec3d(
-					activeSource.originalSound.getXPosF(),
-					activeSource.originalSound.getYPosF(),
-					activeSource.originalSound.getZPosF()
-			);
-
-			if (originalPosition.distanceTo(position) <
-					MIN_REDIRECT_DISTANCE) {
-				return;
-			}
-
-			if (!activeSource.portalCopyScheduled.compareAndSet(
-					false,
-					true
-			)) {
-				return;
-			}
-
-			if (scheduleRedirectedPortalSound(
-					activeSource,
-					position
-			)) {
-				return;
-			}
-
-			/*
-			 * Queue rejected the copy.
-			 * Keep the original sound at its real position.
-			 */
-			activeSource.portalCopyScheduled.set(false);
-
-			if (Config.debugSoundDirection) {
-				logger.warn(
-						"Could not queue portal copy for '{}'. " +
-								"Keeping original position.",
-						activeSource.soundName
-				);
-			}
-
-			return;
-		}
-
-		/*
-		 * Original single-source behavior when double playback is disabled.
-		 */
 		AL10.alSource3f(
 				sourceID,
 				AL10.AL_POSITION,
@@ -1341,24 +968,7 @@ public class SoundPhysics {
 		);
 	}
 
-	private static boolean scheduleRedirectedPortalSound(
-			SoundSourceData sourceData,
-			Vec3d position
-	) {
-		if (sourceData == null ||
-				sourceData.originalSound == null ||
-				sourceData.selectedSound == null ||
-				position == null) {
-			return false;
-		}
 
-		return PortalSoundScheduler.enqueue(
-				sourceData.originalSound,
-				sourceData.selectedSound,
-				position,
-				REDIRECTED_SOUND_VOLUME
-		);
-	}
 
 	private static Vec3d reflect(final Vec3d dir, final Vec3d normal) {
 		final double dot2 = dir.dotProduct(normal) * 2;

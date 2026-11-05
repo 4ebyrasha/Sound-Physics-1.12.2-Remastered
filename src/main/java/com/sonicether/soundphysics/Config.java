@@ -22,7 +22,6 @@ public class Config {
 	public static float reverbAttenuationDistance;
 	public static float reverbDistance;
 	public static boolean soundDirectionEvaluation;
-	public static boolean doubleSoundWithRedirect;
 	public static boolean redirectNonOccludedSounds;
 	public static float rolloffFactor;
 	public static float globalReverbGain;
@@ -300,13 +299,6 @@ public class Config {
 				categoryGeneral,
 				true,
 				"If true, sounds with a direct unobstructed path will not have their positions redirected"
-		);
-
-		doubleSoundWithRedirect = this.forgeConfig.getBoolean(
-				"Double Sound With Redirect",
-				categoryGeneral,
-				true,
-				"If true, the original sound remains at its real position and an additional delayed sound is played at the calculated apparent position. Only works when Sound Direction Evaluation is enabled."
 		);
 
 		SoundDirectionExclusions.configure(
