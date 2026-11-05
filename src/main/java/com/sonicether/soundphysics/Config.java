@@ -301,6 +301,19 @@ public class Config {
 				"If true, sounds with a direct unobstructed path will not have their positions redirected"
 		);
 
+		SoundDirectionExclusions.configure(
+				this.forgeConfig.getStringList(
+						"Sound Direction Exclusions",
+						categoryGeneral,
+						new String[0],
+						"Sound event IDs that must keep their original source position. " +
+								"Reflected sound direction redirection is disabled for these sounds. " +
+								"Occlusion, filtering and reverberation remain active. " +
+								"Format: namespace:sound_event_id. " +
+								"Example: minecraft:entity.generic.explode"
+				)
+		);
+
 
 		// Performance
 		updateMovingSounds = this.forgeConfig.getBoolean(

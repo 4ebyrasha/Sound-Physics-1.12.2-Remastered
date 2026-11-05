@@ -1305,7 +1305,10 @@ public class SoundPhysics {
 			float sharedAirspace = 0.0f;
 
 			final ReflectedAudio reflectedAudio =
-					new ReflectedAudio(occlusionAccumulation);
+					new ReflectedAudio(
+							occlusionAccumulation,
+							SoundDirectionExclusions.isExcluded(name)
+					);
 
 			if (reflectedAudio.shouldEvaluateDirection()) {
 

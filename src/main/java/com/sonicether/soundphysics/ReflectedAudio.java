@@ -16,7 +16,17 @@ public final class ReflectedAudio {
      */
     private static final double MIN_DIRECTION_COHERENCE = 0.12D;
 
+    /*
+     * A small amount of the original source direction is mixed
+     * into the calculated reflected direction.
+     *
+     * 0.05 = 5% original direction, 95% calculated direction.
+     */
+    private static final double ORIGINAL_DIRECTION_BIAS = 0.05D;
+
     private final double occlusion;
+
+    private final boolean directionExcluded;
 
     private final List<DirectionSample> airspaceDirections;
 
@@ -29,17 +39,28 @@ public final class ReflectedAudio {
     private String resultStatus = "NOT_EVALUATED";
 
     public ReflectedAudio(double occlusion) {
+        this(occlusion, false);
+    }
+
+    public ReflectedAudio(
+            double occlusion,
+            boolean directionExcluded
+    ) {
         this.occlusion = occlusion;
+        this.directionExcluded = directionExcluded;
         this.airspaceDirections = new ArrayList<>();
     }
 
     public boolean shouldEvaluateDirection() {
-        return Config.soundDirectionEvaluation &&
+
+        return !directionExcluded &&
+                Config.soundDirectionEvaluation &&
                 (occlusion > 0.0D ||
                         !Config.redirectNonOccludedSounds);
     }
 
     public void addDirectAirspace(Vec3d sharedAirspaceVector) {
+
         if (!shouldEvaluateDirection() ||
                 sharedAirspaceVector == null) {
             return;
@@ -56,6 +77,7 @@ public final class ReflectedAudio {
             Vec3d sharedAirspaceVector,
             double totalRayDistance
     ) {
+
         if (!shouldEvaluateDirection() ||
                 sharedAirspaceVector == null) {
             return;
@@ -122,14 +144,19 @@ public final class ReflectedAudio {
             Vec3d soundPos,
             Vec3d listenerPos
     ) {
+
         directionCoherence = 0.0D;
         resultingDirection = Vec3d.ZERO;
 
         if (!shouldEvaluateDirection()) {
 
-            resultStatus = Config.soundDirectionEvaluation
-                    ? "SKIPPED_NOT_OCCLUDED"
-                    : "DIRECTION_EVALUATION_DISABLED";
+            if (directionExcluded) {
+                resultStatus = "SKIPPED_CONFIG_EXCLUSION";
+            } else {
+                resultStatus = Config.soundDirectionEvaluation
+                        ? "SKIPPED_NOT_OCCLUDED"
+                        : "DIRECTION_EVALUATION_DISABLED";
+            }
 
             return null;
         }
@@ -246,12 +273,42 @@ public final class ReflectedAudio {
             return null;
         }
 
-        resultingDirection = normalized;
+        /*
+         * Original direction from the listener to the sound source.
+         */
+        Vec3d originalDirection =
+                soundPos.subtract(listenerPos)
+                        .scale(1.0D / originalDistance);
+
+        /*
+         * Blend the calculated reflected direction with the
+         * original source direction.
+         *
+         * This slightly reduces excessive directional deviation
+         * without replacing the reflected direction evaluation.
+         */
+        Vec3d finalDirection =
+                normalized.scale(1.0D - ORIGINAL_DIRECTION_BIAS)
+                        .add(
+                                originalDirection.scale(
+                                        ORIGINAL_DIRECTION_BIAS
+                                )
+                        )
+                        .normalize();
+
+        if (finalDirection.lengthSquared() < 1.0E-8D) {
+
+            resultStatus = "INVALID_FINAL_DIRECTION";
+
+            return null;
+        }
+
+        resultingDirection = finalDirection;
 
         resultStatus = "REDIRECTED";
 
         return listenerPos.add(
-                normalized.scale(originalDistance)
+                finalDirection.scale(originalDistance)
         );
     }
 
