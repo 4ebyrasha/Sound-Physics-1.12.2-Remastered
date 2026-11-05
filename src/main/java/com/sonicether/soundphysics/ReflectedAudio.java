@@ -1,3 +1,4 @@
+
 package com.sonicether.soundphysics;
 
 import net.minecraft.util.math.Vec3d;
@@ -17,12 +18,12 @@ public final class ReflectedAudio {
     private static final double MIN_DIRECTION_COHERENCE = 0.12D;
 
     /*
-     * A small amount of the original source direction is mixed
+     * Amount of the original source direction mixed
      * into the calculated reflected direction.
      *
-     * 0.05 = 5% original direction, 95% calculated direction.
+     * 0.15 = 15% original direction, 85% calculated direction.
      */
-    private static final double ORIGINAL_DIRECTION_BIAS = 0.05D;
+    private static final double ORIGINAL_DIRECTION_BIAS = 0.32D;
 
     private final double occlusion;
 
@@ -66,7 +67,11 @@ public final class ReflectedAudio {
             return;
         }
 
-        if (sharedAirspaceVector.lengthSquared() < 1.0E-8D) {
+        double lengthSquared = sharedAirspaceVector.lengthSquared();
+
+        if (lengthSquared < 1.0E-8D ||
+                Double.isNaN(lengthSquared) ||
+                Double.isInfinite(lengthSquared)) {
             return;
         }
 
@@ -171,25 +176,46 @@ public final class ReflectedAudio {
         double totalWeight = 0.0D;
 
         /*
+         * Weighted sum of apparent distances.
+         *
+         * This is deliberately separate from pathLength:
+         *
+         * pathLength:
+         *   Used to determine how much a path contributes.
+         *
+         * apparentDistance:
+         *   Distance from listener to the point through
+         *   which this path enters the shared airspace.
+         */
+        double apparentDistanceSum = 0.0D;
+
+        /*
          * Direct path has weight 1.
          * Reflections use inverse-square path-length weighting.
          */
         if (directDirection != null) {
 
+            double directDistance = directDirection.length();
+
             Vec3d normalizedDirect =
                     directDirection.normalize();
 
-            if (normalizedDirect.lengthSquared() > 0.0D) {
+            if (directDistance > 1.0E-4D &&
+                    !Double.isNaN(directDistance) &&
+                    !Double.isInfinite(directDistance) &&
+                    normalizedDirect.lengthSquared() > 0.0D) {
 
                 directionSum = directionSum.add(normalizedDirect);
 
                 totalWeight += 1.0D;
+
+                apparentDistanceSum += directDistance;
             }
         }
 
         for (DirectionSample sample : airspaceDirections) {
 
-            double pathLength = sample.distance;
+            double pathLength = sample.pathLength;
 
             if (pathLength <= 0.0D ||
                     Double.isNaN(pathLength) ||
@@ -198,6 +224,21 @@ public final class ReflectedAudio {
                 resultStatus = "INVALID_PATH_LENGTH";
 
                 return null;
+            }
+
+            /*
+             * The original vector points from the listener
+             * to the shared-airspace/reflection point.
+             *
+             * Its length is the apparent source distance.
+             */
+            double apparentDistance =
+                    sample.direction.length();
+
+            if (apparentDistance < 1.0E-4D ||
+                    Double.isNaN(apparentDistance) ||
+                    Double.isInfinite(apparentDistance)) {
+                continue;
             }
 
             Vec3d normalizedDirection =
@@ -221,6 +262,13 @@ public final class ReflectedAudio {
             );
 
             totalWeight += weight;
+
+            /*
+             * Accumulate apparent distance using exactly
+             * the same weight as the corresponding direction.
+             */
+            apparentDistanceSum +=
+                    apparentDistance * weight;
         }
 
         if (totalWeight <= 0.0D) {
@@ -260,6 +308,26 @@ public final class ReflectedAudio {
             return null;
         }
 
+        /*
+         * Calculate the weighted apparent distance.
+         *
+         * Do not use the original source distance here.
+         * For redirected sound, this distance should point
+         * towards the shared-airspace entrance, not towards
+         * the actual sound source behind the obstruction.
+         */
+        double apparentDistance =
+                apparentDistanceSum / totalWeight;
+
+        if (apparentDistance < 1.0E-4D ||
+                Double.isNaN(apparentDistance) ||
+                Double.isInfinite(apparentDistance)) {
+
+            resultStatus = "INVALID_APPARENT_DISTANCE";
+
+            return null;
+        }
+
         Vec3d normalized =
                 directionSum.scale(1.0D / resultantLength);
 
@@ -284,8 +352,7 @@ public final class ReflectedAudio {
          * Blend the calculated reflected direction with the
          * original source direction.
          *
-         * This slightly reduces excessive directional deviation
-         * without replacing the reflected direction evaluation.
+         * This reduces excessive directional deviation.
          */
         Vec3d finalDirection =
                 normalized.scale(1.0D - ORIGINAL_DIRECTION_BIAS)
@@ -307,8 +374,12 @@ public final class ReflectedAudio {
 
         resultStatus = "REDIRECTED";
 
+        /*
+         * Place the virtual source at the calculated apparent
+         * distance instead of the original source distance.
+         */
         return listenerPos.add(
-                finalDirection.scale(originalDistance)
+                finalDirection.scale(apparentDistance)
         );
     }
 
@@ -356,8 +427,11 @@ public final class ReflectedAudio {
             Vec3d direction =
                     sample.direction.normalize();
 
+            double apparentDistance =
+                    sample.direction.length();
+
             double weight =
-                    1.0D / (sample.distance * sample.distance);
+                    1.0D / (sample.pathLength * sample.pathLength);
 
             if (i > 0) {
                 result.append(", ");
@@ -366,12 +440,13 @@ public final class ReflectedAudio {
             result.append(
                     String.format(
                             Locale.ROOT,
-                            "#%d dir=(%.3f, %.3f, %.3f) path=%.2f weight=%.6f",
+                            "#%d dir=(%.3f, %.3f, %.3f) path=%.2f apparent=%.2f weight=%.6f",
                             i,
                             direction.x,
                             direction.y,
                             direction.z,
-                            sample.distance,
+                            sample.pathLength,
+                            apparentDistance,
                             weight
                     )
             );
@@ -395,14 +470,14 @@ public final class ReflectedAudio {
 
         private final Vec3d direction;
 
-        private final double distance;
+        private final double pathLength;
 
         private DirectionSample(
                 Vec3d direction,
-                double distance
+                double pathLength
         ) {
             this.direction = direction;
-            this.distance = distance;
+            this.pathLength = pathLength;
         }
     }
 }
