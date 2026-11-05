@@ -64,6 +64,8 @@ public class SoundPhysics {
 
 	private static final Pattern allPattern = Pattern.compile(Config.getBlacklist());
 
+	private static final float UNKNOWN_OCCLUSION = -1.0f;
+
 	@Mod.EventHandler
 	public void preInit(final FMLPreInitializationEvent event) {
 		Config.instance.preInit(event);
@@ -983,6 +985,9 @@ public class SoundPhysics {
 	}
 
 	private static void setDefaultEnvironment(final int sourceID) {
+
+		SOUND_POSITION_OFFSETS.remove(sourceID);
+
 		setEnvironment(
 				sourceID,
 				0.0f,
@@ -1007,6 +1012,7 @@ public class SoundPhysics {
 
 	public static void clearSoundSources() {
 		SOUND_SOURCES.clear();
+		SOUND_POSITION_OFFSETS.clear();
 	}
 
 	/**
@@ -1483,49 +1489,94 @@ public class SoundPhysics {
 	 * The path with the lowest accumulated block occlusion is used, allowing
 	 * sound to pass through small openings that a single ray could miss.
 	 */
-	private static float calculateOcclusion(final Vec3d soundPos, final Vec3d playerPos,
-											final SoundCategory category, final String name,
-											final ClientWorldSnapshot worldSnapshot) {
+	private static float calculateOcclusion(
+			final Vec3d soundPos,
+			final Vec3d playerPos,
+			final SoundCategory category,
+			final String name,
+			final ClientWorldSnapshot worldSnapshot
+	) {
+
 		if (Config.strictOcclusion) {
-			return runOcclusion(soundPos, playerPos, worldSnapshot);
+
+			final float result =
+					runOcclusion(soundPos, playerPos, worldSnapshot);
+
+			return result >= 0.0f
+					? result
+					: 0.0f;
 		}
 
 		float variationFactor = Config.occlusionVariation;
 
-		final boolean isBlockSound = category == SoundCategory.BLOCKS ||
-				blockPattern.matcher(name).matches();
+		final boolean isBlockSound =
+				category == SoundCategory.BLOCKS ||
+						blockPattern.matcher(name).matches();
 
 		if (isBlockSound) {
 			variationFactor = Math.max(variationFactor, 0.49f);
 		}
 
-		float minOcclusion = runOcclusion(soundPos, playerPos, worldSnapshot);
+		float minOcclusion = Float.POSITIVE_INFINITY;
 
-		if (variationFactor <= 0.0f) {
-			return minOcclusion;
+		/*
+		 * Evaluate the original path.
+		 */
+		final float directOcclusion =
+				runOcclusion(soundPos, playerPos, worldSnapshot);
+
+		if (directOcclusion >= 0.0f) {
+			minOcclusion = directOcclusion;
 		}
 
-		for (int x = -1; x <= 1; x += 2) {
-			for (int y = -1; y <= 1; y += 2) {
-				for (int z = -1; z <= 1; z += 2) {
-					final Vec3d offset = new Vec3d(
-							x * variationFactor,
-							y * variationFactor,
-							z * variationFactor
-					);
+		/*
+		 * Evaluate parallel paths to account for small openings.
+		 */
+		if (variationFactor > 0.0f) {
 
-					final float occlusion = runOcclusion(
-							soundPos.add(offset),
-							playerPos.add(offset),
-							worldSnapshot
-					);
+			for (int x = -1; x <= 1; x += 2) {
 
-					minOcclusion = Math.min(minOcclusion, occlusion);
+				for (int y = -1; y <= 1; y += 2) {
+
+					for (int z = -1; z <= 1; z += 2) {
+
+						final Vec3d offset = new Vec3d(
+								x * variationFactor,
+								y * variationFactor,
+								z * variationFactor
+						);
+
+						final float occlusion =
+								runOcclusion(
+										soundPos.add(offset),
+										playerPos.add(offset),
+										worldSnapshot
+								);
+
+						/*
+						 * Ignore incomplete paths.
+						 * Only fully evaluated paths participate
+						 * in the minimum occlusion calculation.
+						 */
+						if (occlusion >= 0.0f) {
+
+							minOcclusion = Math.min(
+									minOcclusion,
+									occlusion
+							);
+						}
+					}
 				}
 			}
 		}
 
-		return minOcclusion;
+		/*
+		 * If no path could be completely evaluated,
+		 * do not artificially mute the original sound.
+		 */
+		return Float.isInfinite(minOcclusion)
+				? 0.0f
+				: minOcclusion;
 	}
 
 	/**
@@ -1629,8 +1680,11 @@ public class SoundPhysics {
 			final ClientWorldSnapshot worldSnapshot
 	) {
 
-		if (Config.maxOcclusion <= 0.0f) {
-			return 0.0f;
+		if (!worldSnapshot.hasChunkCoverage(
+				soundPos,
+				playerPos
+		)) {
+			return UNKNOWN_OCCLUSION;
 		}
 
 		/*
@@ -2114,6 +2168,14 @@ public class SoundPhysics {
 									: SoundDirectionDebug.COLOR_UNKNOWN
 					);
 
+					if (newRayHit == null &&
+							!worldSnapshot.hasChunkCoverage(
+									newRayStart,
+									newRayEnd
+							)) {
+						break;
+					}
+
 					float energyTowardsPlayer = 0.25f;
 
 					final float blockReflectivity =
@@ -2424,6 +2486,8 @@ public class SoundPhysics {
 			);
 
 		} catch (Exception e) {
+
+			SOUND_POSITION_OFFSETS.remove(sourceID);
 
 			logger.error("Error while evaluation environment:", e);
 
@@ -2746,6 +2810,8 @@ public class SoundPhysics {
 			return;
 		}
 
+		SOUND_POSITION_OFFSETS.remove(sourceID);
+
 		final ALCcontext context =
 				ALC10.alcGetCurrentContext();
 
@@ -2833,7 +2899,7 @@ public class SoundPhysics {
 		reverbConfigDirty = true;
 
 		SOURCE_FILTERS.clear();
-
+		SOUND_POSITION_OFFSETS.clear();
 		SOUND_SOURCES.clear();
 
 		efxAvailable = false;

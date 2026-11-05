@@ -21,7 +21,7 @@ public final class ClientWorldSnapshotManager {
     private static final AtomicReference<ClientWorldSnapshot> SNAPSHOT = new AtomicReference<>();
     private static final AtomicBoolean REGISTERED = new AtomicBoolean();
 
-    private static final int CHUNK_RANGE = 4;
+    private static final int CHUNK_RANGE = 17;
     private static final long CACHE_RETAIN_TICKS = 20L;
     private static final double CACHE_MOVE_DISTANCE_SQUARED = 256.0D;
 
