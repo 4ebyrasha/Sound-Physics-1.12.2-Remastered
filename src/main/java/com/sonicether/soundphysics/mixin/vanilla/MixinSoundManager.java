@@ -47,7 +47,8 @@ public class MixinSoundManager {
                 soundcategory,
                 sound.getSoundLocation(),
                 resourcelocation,
-                sourceName
+                sourceName,
+                sound
         );
     }
 

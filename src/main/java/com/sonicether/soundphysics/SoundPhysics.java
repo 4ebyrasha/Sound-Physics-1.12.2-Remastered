@@ -28,6 +28,7 @@ import org.apache.logging.log4j.Logger;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.openal.*;
 import paulscode.sound.*;
+import net.minecraft.client.audio.Sound;
 
 import javax.annotation.Nullable;
 import javax.sound.sampled.AudioFormat;
@@ -100,17 +101,36 @@ public class SoundPhysics {
 	private static String lastSoundName;
 	private static ISound.AttenuationType lastSoundAtt;
 
+	private static final float REDIRECTED_SOUND_VOLUME = 0.35F;
+
+	private static final int REDIRECTED_SOUND_DELAY_TICKS = 2;
+
+	private static final double MIN_REDIRECT_DISTANCE = 0.25D;
+
+	private static final ThreadLocal<SoundSourceData> CURRENT_SOUND_SOURCE =
+			new ThreadLocal<>();
+
 	private static final Map<String, SoundSourceData> SOUND_SOURCES =
 			new ConcurrentHashMap<>();
 
 	private static final class SoundSourceData {
 
 		private final SoundCategory category;
+
 		private final String soundName;
+
 		private final ISound.AttenuationType attenuationType;
+
 		private final boolean moving;
 
+		private final ISound originalSound;
+
+		private final Sound selectedSound;
+
+		private final boolean portalCopy;
+
 		private volatile long lastEvaluationTick;
+
 		private volatile boolean acousticsEnabled;
 
 		private SoundSourceData(
@@ -118,13 +138,32 @@ public class SoundPhysics {
 				String soundName,
 				ISound.AttenuationType attenuationType,
 				boolean moving,
+				ISound originalSound,
+				Sound selectedSound,
+				boolean portalCopy,
 				long lastEvaluationTick
 		) {
 			this.category = category;
 			this.soundName = soundName;
 			this.attenuationType = attenuationType;
 			this.moving = moving;
+			this.originalSound = originalSound;
+			this.selectedSound = selectedSound;
+			this.portalCopy = portalCopy;
 			this.lastEvaluationTick = lastEvaluationTick;
+		}
+
+		private boolean canCreatePortalCopy() {
+
+			return !portalCopy &&
+					!moving &&
+					originalSound != null &&
+					selectedSound != null &&
+					!originalSound.canRepeat() &&
+					!selectedSound.isStreaming() &&
+					originalSound.getAttenuationType() != null &&
+					originalSound.getAttenuationType()
+							!= ISound.AttenuationType.NONE;
 		}
 	}
 
@@ -250,6 +289,24 @@ public class SoundPhysics {
 			final ResourceLocation eventRes,
 			final String sourceName
 	) {
+		setLastSound(
+				snd,
+				sc,
+				soundRes,
+				eventRes,
+				sourceName,
+				null
+		);
+	}
+
+	public static void setLastSound(
+			final ISound snd,
+			final SoundCategory sc,
+			final ResourceLocation soundRes,
+			final ResourceLocation eventRes,
+			final String sourceName,
+			final Sound selectedSound
+	) {
 		lastSoundName = eventRes.toString() + "|" + soundRes.getPath();
 
 		SoundCategory actualCategory = getSoundCategory(
@@ -261,6 +318,8 @@ public class SoundPhysics {
 		lastSoundAtt = snd.getAttenuationType();
 
 		boolean moving = snd instanceof ITickableSound;
+
+		boolean portalCopy = snd instanceof RedirectedPortalSound;
 
 		// Preserve the original behavior of the global volume
 		// multiplier and stereo downmix for moving sounds.
@@ -279,6 +338,9 @@ public class SoundPhysics {
 						lastSoundName,
 						snd.getAttenuationType(),
 						moving,
+						snd,
+						selectedSound,
+						portalCopy,
 						getCurrentWorldTime()
 				)
 		);
@@ -477,17 +539,30 @@ public class SoundPhysics {
 			return;
 		}
 
-		onPlaySound(
-				posX,
-				posY,
-				posZ,
-				sourceID,
-				data.category,
-				data.soundName,
-				data.attenuationType
-		);
+		SoundSourceData previousSource = CURRENT_SOUND_SOURCE.get();
 
-		data.acousticsEnabled = data.moving && Config.updateMovingSounds;
+		CURRENT_SOUND_SOURCE.set(data);
+
+		try {
+			onPlaySound(
+					posX,
+					posY,
+					posZ,
+					sourceID,
+					data.category,
+					data.soundName,
+					data.attenuationType
+			);
+		} finally {
+			if (previousSource == null) {
+				CURRENT_SOUND_SOURCE.remove();
+			} else {
+				CURRENT_SOUND_SOURCE.set(previousSource);
+			}
+		}
+
+		data.acousticsEnabled =
+				data.moving && Config.updateMovingSounds;
 	}
 
 	/**
@@ -799,6 +874,57 @@ public class SoundPhysics {
 			int sourceID,
 			Vec3d position
 	) {
+		SoundSourceData activeSource = CURRENT_SOUND_SOURCE.get();
+
+		/*
+		 * This is already the delayed portal copy.
+		 *
+		 * It must stay at its calculated position and must
+		 * never create another redirected copy.
+		 */
+		if (activeSource != null && activeSource.portalCopy) {
+			return;
+		}
+
+		/*
+		 * Double sound mode:
+		 *
+		 * 1. Keep the original OpenAL source untouched.
+		 * 2. Schedule another sound at the redirected position.
+		 * 3. Let the second source receive its own acoustic evaluation.
+		 */
+		if (Config.soundDirectionEvaluation &&
+				Config.doubleSoundWithRedirect &&
+				activeSource != null &&
+				activeSource.canCreatePortalCopy()) {
+
+			Vec3d originalPosition = new Vec3d(
+					activeSource.originalSound.getXPosF(),
+					activeSource.originalSound.getYPosF(),
+					activeSource.originalSound.getZPosF()
+			);
+
+			double displacement =
+					originalPosition.distanceTo(position);
+
+			if (displacement < MIN_REDIRECT_DISTANCE) {
+				return;
+			}
+
+			if (scheduleRedirectedPortalSound(
+					activeSource,
+					position
+			)) {
+				return;
+			}
+		}
+
+		/*
+		 * Original single-source behavior.
+		 *
+		 * Also used for sounds that cannot safely be duplicated:
+		 * moving, repeating, streaming and external OpenAL sounds.
+		 */
 		AL10.alSource3f(
 				sourceID,
 				AL10.AL_POSITION,
@@ -806,6 +932,43 @@ public class SoundPhysics {
 				(float) position.y,
 				(float) position.z
 		);
+	}
+
+	private static boolean scheduleRedirectedPortalSound(
+			SoundSourceData sourceData,
+			Vec3d position
+	) {
+		if (mc == null) {
+			return false;
+		}
+
+		final RedirectedPortalSound portalSound =
+				new RedirectedPortalSound(
+						sourceData.originalSound,
+						sourceData.selectedSound,
+						position,
+						REDIRECTED_SOUND_VOLUME
+				);
+
+		/*
+		 * SourceLWJGLOpenAL.play() can execute on the SoundSystem
+		 * thread. SoundHandler must be accessed from the client thread.
+		 */
+		mc.addScheduledTask(() -> {
+
+			Minecraft client = Minecraft.getMinecraft();
+
+			if (client.player == null || client.world == null) {
+				return;
+			}
+
+			client.getSoundHandler().playDelayedSound(
+					portalSound,
+					REDIRECTED_SOUND_DELAY_TICKS
+			);
+		});
+
+		return true;
 	}
 
 	private static Vec3d reflect(final Vec3d dir, final Vec3d normal) {
