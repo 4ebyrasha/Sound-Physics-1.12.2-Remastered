@@ -90,12 +90,14 @@ public class SoundPhysics {
 	private static int reverb1;
 	private static int reverb2;
 	private static int reverb3;
-	private static int directFilter0;
-	private static int sendFilter0;
-	private static int sendFilter1;
-	private static int sendFilter2;
-	private static int sendFilter3;
 	private static int maxAuxSends;
+
+	private static boolean efxAvailable;
+
+	private static final ConcurrentHashMap<
+			ALCcontext,
+			ConcurrentHashMap<Integer, SourceFilters>
+			> SOURCE_FILTERS = new ConcurrentHashMap<>();
 
 	private static Minecraft mc;
 
@@ -112,6 +114,26 @@ public class SoundPhysics {
 
 	private static final Map<String, SoundSourceData> SOUND_SOURCES =
 			new ConcurrentHashMap<>();
+
+	private static final class SourceFilters {
+
+		private final int directFilter;
+
+		private final int sendFilter0;
+		private final int sendFilter1;
+		private final int sendFilter2;
+		private final int sendFilter3;
+
+		private SourceFilters() {
+
+			directFilter = createLowPassFilter();
+
+			sendFilter0 = createLowPassFilter();
+			sendFilter1 = createLowPassFilter();
+			sendFilter2 = createLowPassFilter();
+			sendFilter3 = createLowPassFilter();
+		}
+	}
 
 	private static final class SoundSourceData {
 
@@ -157,7 +179,6 @@ public class SoundPhysics {
 					originalSound != null &&
 					selectedSound != null &&
 					!originalSound.canRepeat() &&
-					!selectedSound.isStreaming() &&
 					originalSound.getAttenuationType() != null &&
 					originalSound.getAttenuationType()
 							!= ISound.AttenuationType.NONE;
@@ -201,69 +222,209 @@ public class SoundPhysics {
 		}
 	}
 
-	private static void setupEFX() {
-		// Get current context and device
-		final ALCcontext currentContext = ALC10.alcGetCurrentContext();
-		final ALCdevice currentDevice = ALC10.alcGetContextsDevice(currentContext);
+	private static int createLowPassFilter() {
 
-		if (ALC10.alcIsExtensionPresent(currentDevice, "ALC_EXT_EFX")) {
-			log("EFX Extension recognized.");
-		} else {
-			logError("EFX Extension not found on current device. Aborting.");
+		final int filter = EFX10.alGenFilters();
+
+		if (filter == 0) {
+			throw new IllegalStateException(
+					"OpenAL failed to create an EFX low-pass filter."
+			);
+		}
+
+		EFX10.alFilteri(
+				filter,
+				EFX10.AL_FILTER_TYPE,
+				EFX10.AL_FILTER_LOWPASS
+		);
+
+		return filter;
+	}
+
+	private static SourceFilters getSourceFilters(
+			final int sourceID
+	) {
+		if (!efxAvailable || sourceID <= 0) {
+			return null;
+		}
+
+		final ALCcontext context =
+				ALC10.alcGetCurrentContext();
+
+		if (context == null) {
+			return null;
+		}
+
+		ConcurrentHashMap<Integer, SourceFilters> contextFilters =
+				SOURCE_FILTERS.get(context);
+
+		if (contextFilters == null) {
+
+			ConcurrentHashMap<Integer, SourceFilters> newContextFilters =
+					new ConcurrentHashMap<>();
+
+			ConcurrentHashMap<Integer, SourceFilters> existing =
+					SOURCE_FILTERS.putIfAbsent(
+							context,
+							newContextFilters
+					);
+
+			contextFilters = existing != null
+					? existing
+					: newContextFilters;
+		}
+
+		SourceFilters filters = contextFilters.get(sourceID);
+
+		if (filters != null) {
+			return filters;
+		}
+
+		/*
+		 * Create filters only once for each physical OpenAL source
+		 * within the current OpenAL context.
+		 */
+		synchronized (contextFilters) {
+
+			filters = contextFilters.get(sourceID);
+
+			if (filters == null) {
+
+				try {
+
+					filters = new SourceFilters();
+
+					contextFilters.put(
+							sourceID,
+							filters
+					);
+
+				} catch (Throwable e) {
+
+					logger.error(
+							"Failed to create EFX filters for OpenAL source {}",
+							sourceID,
+							e
+					);
+
+					return null;
+				}
+			}
+		}
+
+		return filters;
+	}
+
+	private static void setupEFX() {
+
+		final ALCcontext currentContext =
+				ALC10.alcGetCurrentContext();
+
+		if (currentContext == null) {
+			efxAvailable = false;
+			logError("No current OpenAL context. EFX initialization aborted.");
 			return;
 		}
-		IntBuffer buffer = BufferUtils.createIntBuffer(Short.MAX_VALUE + 1);
-		ALC10.alcGetInteger(currentDevice, EFX10.ALC_MAX_AUXILIARY_SENDS, buffer);
-		maxAuxSends = buffer.get();
+
+		final ALCdevice currentDevice =
+				ALC10.alcGetContextsDevice(currentContext);
+
+		if (!ALC10.alcIsExtensionPresent(
+				currentDevice,
+				"ALC_EXT_EFX"
+		)) {
+
+			efxAvailable = false;
+
+			logError(
+					"EFX Extension not found on current device. Aborting."
+			);
+
+			return;
+		}
+
+		efxAvailable = true;
+
+		log("EFX Extension recognized.");
+
+		IntBuffer buffer = BufferUtils.createIntBuffer(1);
+
+		ALC10.alcGetInteger(
+				currentDevice,
+				EFX10.ALC_MAX_AUXILIARY_SENDS,
+				buffer
+		);
+
+		maxAuxSends = buffer.get(0);
+
 		log("Max auxiliary sends: " + maxAuxSends);
 
-		// Create auxiliary effect slots
+		// Create auxiliary effect slots.
 		auxFXSlot0 = EFX10.alGenAuxiliaryEffectSlots();
 		log("Aux slot " + auxFXSlot0 + " created");
-		EFX10.alAuxiliaryEffectSloti(auxFXSlot0, EFX10.AL_EFFECTSLOT_AUXILIARY_SEND_AUTO, AL10.AL_TRUE);
+		EFX10.alAuxiliaryEffectSloti(
+				auxFXSlot0,
+				EFX10.AL_EFFECTSLOT_AUXILIARY_SEND_AUTO,
+				AL10.AL_TRUE
+		);
 
 		auxFXSlot1 = EFX10.alGenAuxiliaryEffectSlots();
 		log("Aux slot " + auxFXSlot1 + " created");
-		EFX10.alAuxiliaryEffectSloti(auxFXSlot1, EFX10.AL_EFFECTSLOT_AUXILIARY_SEND_AUTO, AL10.AL_TRUE);
+		EFX10.alAuxiliaryEffectSloti(
+				auxFXSlot1,
+				EFX10.AL_EFFECTSLOT_AUXILIARY_SEND_AUTO,
+				AL10.AL_TRUE
+		);
 
 		auxFXSlot2 = EFX10.alGenAuxiliaryEffectSlots();
 		log("Aux slot " + auxFXSlot2 + " created");
-		EFX10.alAuxiliaryEffectSloti(auxFXSlot2, EFX10.AL_EFFECTSLOT_AUXILIARY_SEND_AUTO, AL10.AL_TRUE);
+		EFX10.alAuxiliaryEffectSloti(
+				auxFXSlot2,
+				EFX10.AL_EFFECTSLOT_AUXILIARY_SEND_AUTO,
+				AL10.AL_TRUE
+		);
 
 		auxFXSlot3 = EFX10.alGenAuxiliaryEffectSlots();
 		log("Aux slot " + auxFXSlot3 + " created");
-		EFX10.alAuxiliaryEffectSloti(auxFXSlot3, EFX10.AL_EFFECTSLOT_AUXILIARY_SEND_AUTO, AL10.AL_TRUE);
+		EFX10.alAuxiliaryEffectSloti(
+				auxFXSlot3,
+				EFX10.AL_EFFECTSLOT_AUXILIARY_SEND_AUTO,
+				AL10.AL_TRUE
+		);
+
 		checkErrorLog("Failed creating auxiliary effect slots!");
 
 		reverb0 = EFX10.alGenEffects();
-		EFX10.alEffecti(reverb0, EFX10.AL_EFFECT_TYPE, EFX10.AL_EFFECT_EAXREVERB);
+		EFX10.alEffecti(
+				reverb0,
+				EFX10.AL_EFFECT_TYPE,
+				EFX10.AL_EFFECT_EAXREVERB
+		);
 		checkErrorLog("Failed creating reverb effect slot 0!");
+
 		reverb1 = EFX10.alGenEffects();
-		EFX10.alEffecti(reverb1, EFX10.AL_EFFECT_TYPE, EFX10.AL_EFFECT_EAXREVERB);
+		EFX10.alEffecti(
+				reverb1,
+				EFX10.AL_EFFECT_TYPE,
+				EFX10.AL_EFFECT_EAXREVERB
+		);
 		checkErrorLog("Failed creating reverb effect slot 1!");
+
 		reverb2 = EFX10.alGenEffects();
-		EFX10.alEffecti(reverb2, EFX10.AL_EFFECT_TYPE, EFX10.AL_EFFECT_EAXREVERB);
+		EFX10.alEffecti(
+				reverb2,
+				EFX10.AL_EFFECT_TYPE,
+				EFX10.AL_EFFECT_EAXREVERB
+		);
 		checkErrorLog("Failed creating reverb effect slot 2!");
+
 		reverb3 = EFX10.alGenEffects();
-		EFX10.alEffecti(reverb3, EFX10.AL_EFFECT_TYPE, EFX10.AL_EFFECT_EAXREVERB);
+		EFX10.alEffecti(
+				reverb3,
+				EFX10.AL_EFFECT_TYPE,
+				EFX10.AL_EFFECT_EAXREVERB
+		);
 		checkErrorLog("Failed creating reverb effect slot 3!");
-
-		// Create filters
-		directFilter0 = EFX10.alGenFilters();
-		EFX10.alFilteri(directFilter0, EFX10.AL_FILTER_TYPE, EFX10.AL_FILTER_LOWPASS);
-
-		sendFilter0 = EFX10.alGenFilters();
-		EFX10.alFilteri(sendFilter0, EFX10.AL_FILTER_TYPE, EFX10.AL_FILTER_LOWPASS);
-
-		sendFilter1 = EFX10.alGenFilters();
-		EFX10.alFilteri(sendFilter1, EFX10.AL_FILTER_TYPE, EFX10.AL_FILTER_LOWPASS);
-
-		sendFilter2 = EFX10.alGenFilters();
-		EFX10.alFilteri(sendFilter2, EFX10.AL_FILTER_TYPE, EFX10.AL_FILTER_LOWPASS);
-
-		sendFilter3 = EFX10.alGenFilters();
-		EFX10.alFilteri(sendFilter3, EFX10.AL_FILTER_TYPE, EFX10.AL_FILTER_LOWPASS);
-		checkErrorLog("Error creating lowpass filters!");
 
 		applyConfigChanges();
 	}
@@ -1081,49 +1242,95 @@ public class SoundPhysics {
 		SoundSourceData activeSource = CURRENT_SOUND_SOURCE.get();
 
 		/*
-		 * A portal copy already starts at the calculated position.
-		 * Never redirect it again.
+		 * A portal copy must never redirect itself or create another copy.
 		 */
 		if (activeSource != null && activeSource.portalCopy) {
 			return;
 		}
 
+		/*
+		 * Double playback mode:
+		 *
+		 * The original OpenAL source must stay at its real position.
+		 * The second source is responsible for playback at the apparent position.
+		 *
+		 * If duplication is impossible, preserve the original position.
+		 * Do not silently fall back to single-source redirection.
+		 */
 		if (Config.soundDirectionEvaluation &&
-				Config.doubleSoundWithRedirect &&
-				activeSource != null &&
-				activeSource.canCreatePortalCopy()) {
+				Config.doubleSoundWithRedirect) {
 
-			/*
-			 * Keep the original source at its real coordinates.
-			 *
-			 * Only one portal copy may be scheduled for this source.
-			 */
-			if (activeSource.portalCopyScheduled.get()) {
+			if (activeSource == null) {
+
+				if (Config.debugSoundDirection) {
+					logger.warn(
+							"Cannot create portal copy for source {}: " +
+									"sound metadata is unavailable. " +
+									"Keeping original position.",
+							sourceID
+					);
+				}
+
 				return;
 			}
 
-			if (activeSource.portalCopyScheduled.compareAndSet(
+			if (!activeSource.canCreatePortalCopy()) {
+
+				if (Config.debugSoundDirection) {
+					logger.warn(
+							"Cannot create portal copy for '{}'. " +
+									"Keeping original position.",
+							activeSource.soundName
+					);
+				}
+
+				return;
+			}
+
+			Vec3d originalPosition = new Vec3d(
+					activeSource.originalSound.getXPosF(),
+					activeSource.originalSound.getYPosF(),
+					activeSource.originalSound.getZPosF()
+			);
+
+			if (originalPosition.distanceTo(position) <
+					MIN_REDIRECT_DISTANCE) {
+				return;
+			}
+
+			if (!activeSource.portalCopyScheduled.compareAndSet(
 					false,
 					true
 			)) {
-
-				if (scheduleRedirectedPortalSound(
-						activeSource,
-						position
-				)) {
-					return;
-				}
-
-				/*
-				 * Queue rejected the sound.
-				 * Restore the old single-source behavior.
-				 */
-				activeSource.portalCopyScheduled.set(false);
+				return;
 			}
+
+			if (scheduleRedirectedPortalSound(
+					activeSource,
+					position
+			)) {
+				return;
+			}
+
+			/*
+			 * Queue rejected the copy.
+			 * Keep the original sound at its real position.
+			 */
+			activeSource.portalCopyScheduled.set(false);
+
+			if (Config.debugSoundDirection) {
+				logger.warn(
+						"Could not queue portal copy for '{}'. " +
+								"Keeping original position.",
+						activeSource.soundName
+				);
+			}
+
+			return;
 		}
 
 		/*
-		 * Single-source mode or fallback when duplication is unavailable.
+		 * Original single-source behavior when double playback is disabled.
 		 */
 		AL10.alSource3f(
 				sourceID,
@@ -2125,38 +2332,93 @@ public class SoundPhysics {
 		}
 	}
 
-	private static void setEnvironment(final int sourceID, final float sendGain0, final float sendGain1,
-									   final float sendGain2, final float sendGain3, final float sendCutoff0, final float sendCutoff1,
-									   final float sendCutoff2, final float sendCutoff3, final float directCutoff, final float directGain,
+	private static void setEnvironment(final int sourceID,
+									   final float sendGain0, final float sendGain1,
+									   final float sendGain2, final float sendGain3,
+									   final float sendCutoff0, final float sendCutoff1,
+									   final float sendCutoff2, final float sendCutoff3,
+									   final float directCutoff, final float directGain,
 									   final float airAbsorptionFactor) {
-		// Set reverb send filter values and set source to send to all reverb fx
-		// slots
+
+		final SourceFilters filters = getSourceFilters(sourceID);
+
+		if (filters == null) {
+			return;
+		}
+
+		// Reverb send 0
 		if (maxAuxSends >= 4) {
-			EFX10.alFilterf(sendFilter0, EFX10.AL_LOWPASS_GAIN, sendGain0);
-			EFX10.alFilterf(sendFilter0, EFX10.AL_LOWPASS_GAINHF, sendCutoff0);
-			AL11.alSource3i(sourceID, EFX10.AL_AUXILIARY_SEND_FILTER, auxFXSlot0, 3, sendFilter0);
+			EFX10.alFilterf(filters.sendFilter0, EFX10.AL_LOWPASS_GAIN, sendGain0);
+			EFX10.alFilterf(filters.sendFilter0, EFX10.AL_LOWPASS_GAINHF, sendCutoff0);
+
+			AL11.alSource3i(
+					sourceID,
+					EFX10.AL_AUXILIARY_SEND_FILTER,
+					auxFXSlot0,
+					3,
+					filters.sendFilter0
+			);
 		}
+
+		// Reverb send 1
 		if (maxAuxSends >= 3) {
-			EFX10.alFilterf(sendFilter1, EFX10.AL_LOWPASS_GAIN, sendGain1);
-			EFX10.alFilterf(sendFilter1, EFX10.AL_LOWPASS_GAINHF, sendCutoff1);
-			AL11.alSource3i(sourceID, EFX10.AL_AUXILIARY_SEND_FILTER, auxFXSlot1, 2, sendFilter1);
+			EFX10.alFilterf(filters.sendFilter1, EFX10.AL_LOWPASS_GAIN, sendGain1);
+			EFX10.alFilterf(filters.sendFilter1, EFX10.AL_LOWPASS_GAINHF, sendCutoff1);
+
+			AL11.alSource3i(
+					sourceID,
+					EFX10.AL_AUXILIARY_SEND_FILTER,
+					auxFXSlot1,
+					2,
+					filters.sendFilter1
+			);
 		}
+
+		// Reverb send 2
 		if (maxAuxSends >= 2) {
-			EFX10.alFilterf(sendFilter2, EFX10.AL_LOWPASS_GAIN, sendGain2);
-			EFX10.alFilterf(sendFilter2, EFX10.AL_LOWPASS_GAINHF, sendCutoff2);
-			AL11.alSource3i(sourceID, EFX10.AL_AUXILIARY_SEND_FILTER, auxFXSlot2, 1, sendFilter2);
+			EFX10.alFilterf(filters.sendFilter2, EFX10.AL_LOWPASS_GAIN, sendGain2);
+			EFX10.alFilterf(filters.sendFilter2, EFX10.AL_LOWPASS_GAINHF, sendCutoff2);
+
+			AL11.alSource3i(
+					sourceID,
+					EFX10.AL_AUXILIARY_SEND_FILTER,
+					auxFXSlot2,
+					1,
+					filters.sendFilter2
+			);
 		}
+
+		// Reverb send 3
 		if (maxAuxSends >= 1) {
-			EFX10.alFilterf(sendFilter3, EFX10.AL_LOWPASS_GAIN, sendGain3);
-			EFX10.alFilterf(sendFilter3, EFX10.AL_LOWPASS_GAINHF, sendCutoff3);
-			AL11.alSource3i(sourceID, EFX10.AL_AUXILIARY_SEND_FILTER, auxFXSlot3, 0, sendFilter3);
+			EFX10.alFilterf(filters.sendFilter3, EFX10.AL_LOWPASS_GAIN, sendGain3);
+			EFX10.alFilterf(filters.sendFilter3, EFX10.AL_LOWPASS_GAINHF, sendCutoff3);
+
+			AL11.alSource3i(
+					sourceID,
+					EFX10.AL_AUXILIARY_SEND_FILTER,
+					auxFXSlot3,
+					0,
+					filters.sendFilter3
+			);
 		}
 
-		EFX10.alFilterf(directFilter0, EFX10.AL_LOWPASS_GAIN, directGain);
-		EFX10.alFilterf(directFilter0, EFX10.AL_LOWPASS_GAINHF, directCutoff);
-		AL10.alSourcei(sourceID, EFX10.AL_DIRECT_FILTER, directFilter0);
+		// Direct sound filter
+		EFX10.alFilterf(filters.directFilter, EFX10.AL_LOWPASS_GAIN, directGain);
+		EFX10.alFilterf(filters.directFilter, EFX10.AL_LOWPASS_GAINHF, directCutoff);
 
-		AL10.alSourcef(sourceID, EFX10.AL_AIR_ABSORPTION_FACTOR, MathHelper.clamp(Config.airAbsorption * airAbsorptionFactor,0.0f,10.0f));
+		AL10.alSourcei(
+				sourceID,
+				EFX10.AL_DIRECT_FILTER,
+				filters.directFilter
+		);
+
+		// Air absorption
+		AL10.alSourcef(
+				sourceID,
+				EFX10.AL_AIR_ABSORPTION_FACTOR,
+				MathHelper.clamp(Config.airAbsorption * airAbsorptionFactor, 0.0f, 10.0f)
+		);
+
 		checkErrorLog("Error while setting environment for source: " + sourceID);
 	}
 

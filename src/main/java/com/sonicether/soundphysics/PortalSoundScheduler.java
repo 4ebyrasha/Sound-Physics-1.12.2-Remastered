@@ -4,7 +4,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.audio.ISound;
 import net.minecraft.client.audio.Sound;
 import net.minecraft.util.math.Vec3d;
-import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.fml.common.FMLCommonHandler;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.gameevent.TickEvent;
 
@@ -15,20 +15,10 @@ import java.util.Queue;
 
 public final class PortalSoundScheduler {
 
-    /*
-     * Maximum number of sounds waiting for client-thread processing.
-     */
     private static final int MAX_PENDING_SOUNDS = 32;
 
-    /*
-     * Maximum number of portal copies submitted during one client tick.
-     */
     private static final int MAX_SOUNDS_PER_TICK = 8;
 
-    /*
-     * Delay between the original sound and the portal copy.
-     * 2 ticks are approximately 100 ms at 20 TPS.
-     */
     private static final int PLAY_DELAY_TICKS = 2;
 
     private static final Queue<PendingPortalSound> PENDING_SOUNDS =
@@ -40,14 +30,15 @@ public final class PortalSoundScheduler {
     private PortalSoundScheduler() {
     }
 
+    @SuppressWarnings("deprecation")
     public static void register() {
-        MinecraftForge.EVENT_BUS.register(INSTANCE);
+        FMLCommonHandler.instance().bus().register(INSTANCE);
     }
 
     /**
      * Can be called from the OpenAL/SoundSystem thread.
      * <p>
-     * This method only places immutable playback data into a queue.
+     * This method only adds playback data to the queue.
      * It does not access Minecraft's SoundHandler.
      */
     public static boolean enqueue(
@@ -67,7 +58,7 @@ public final class PortalSoundScheduler {
             if (PENDING_SOUNDS.size() >= MAX_PENDING_SOUNDS) {
                 SoundPhysics.logger.warn(
                         "Portal sound queue is full. " +
-                                "Using the original single-source behavior."
+                                "The portal copy will be skipped."
                 );
 
                 return false;
@@ -86,9 +77,6 @@ public final class PortalSoundScheduler {
         return true;
     }
 
-    /**
-     * Called when all sound sources are stopped or the world changes.
-     */
     public static void clear() {
         synchronized (PENDING_SOUNDS) {
             PENDING_SOUNDS.clear();
@@ -114,8 +102,7 @@ public final class PortalSoundScheduler {
 
         /*
          * Take a limited batch from the queue.
-         *
-         * SoundHandler is never accessed while holding the queue lock.
+         * Do not access SoundHandler while holding the queue lock.
          */
         synchronized (PENDING_SOUNDS) {
 
@@ -144,9 +131,6 @@ public final class PortalSoundScheduler {
                                 pending.volume
                         );
 
-                /*
-                 * This call is now guaranteed to run on the client thread.
-                 */
                 mc.getSoundHandler().playDelayedSound(
                         portalSound,
                         PLAY_DELAY_TICKS
