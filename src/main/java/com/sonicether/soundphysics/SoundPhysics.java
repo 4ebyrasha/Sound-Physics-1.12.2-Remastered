@@ -1672,32 +1672,27 @@ public class SoundPhysics {
 	 * Traces one path from the sound source to the listener and accumulates
 	 * the occlusion contribution of every block intersected by that path.
 	 */
-
-
 	private static float runOcclusion(
 			final Vec3d soundPos,
 			final Vec3d playerPos,
 			final ClientWorldSnapshot worldSnapshot
 	) {
 
-		if (!worldSnapshot.hasChunkCoverage(
-				soundPos,
-				playerPos
-		)) {
-			return UNKNOWN_OCCLUSION;
+		// Occlusion disabled.
+		if (Config.maxOcclusion <= 0.0f) {
+			return 0.0f;
 		}
 
 		/*
-		 * Do not interpret an incomplete snapshot path as open air.
-		 *
-		 * calculateOcclusion() tests several offset paths, so another
-		 * fully covered path can still provide a valid result.
+		 * The path is outside the available snapshot.
+		 * Do not interpret missing chunks as solid blocks
+		 * or open air.
 		 */
 		if (!worldSnapshot.hasChunkCoverage(
 				soundPos,
 				playerPos
 		)) {
-			return Config.maxOcclusion;
+			return UNKNOWN_OCCLUSION;
 		}
 
 		final Vec3d normalToPlayer =
