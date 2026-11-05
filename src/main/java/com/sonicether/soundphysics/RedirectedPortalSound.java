@@ -11,8 +11,6 @@ import javax.annotation.Nonnull;
 
 public final class RedirectedPortalSound extends PositionedSound {
 
-    private final ISound originalSound;
-
     private final Sound selectedSound;
 
     private final float portalVolume;
@@ -30,7 +28,6 @@ public final class RedirectedPortalSound extends PositionedSound {
                 originalSound.getCategory()
         );
 
-        this.originalSound = originalSound;
         this.selectedSound = selectedSound;
 
         this.positionedSoundLocation =
@@ -39,17 +36,14 @@ public final class RedirectedPortalSound extends PositionedSound {
         this.category =
                 originalSound.getCategory();
 
-        this.volume =
-                originalSound.getVolume() * volumeMultiplier;
-
-        this.pitch =
-                originalSound.getPitch();
-
         this.portalVolume =
                 originalSound.getVolume() * volumeMultiplier;
 
         this.portalPitch =
                 originalSound.getPitch();
+
+        this.volume = portalVolume;
+        this.pitch = portalPitch;
 
         this.xPosF = (float) position.x;
         this.yPosF = (float) position.y;
@@ -71,10 +65,10 @@ public final class RedirectedPortalSound extends PositionedSound {
     }
 
     @Override
-    public SoundEventAccessor createAccessor(@Nonnull
+    public SoundEventAccessor createAccessor(
             SoundHandler handler
     ) {
-        return originalSound.createAccessor(handler);
+        return handler.getAccessor(positionedSoundLocation);
     }
 
     @Override
