@@ -1831,21 +1831,18 @@ public class SoundPhysics {
 						1.0f, 1.0f, 1.0f, 1.0f,
 						1.0f, 1.0f, 1.0f
 				);
-
 				return;
 			}
 
 			final boolean isRain = rainPattern.matcher(name).matches();
 
 			if (Config.skipRainOcclusionTracing && isRain) {
-
 				setEnvironment(
 						sourceID,
 						0.0f, 0.0f, 0.0f, 0.0f,
 						1.0f, 1.0f, 1.0f, 1.0f,
 						1.0f, 1.0f, 1.0f
 				);
-
 				return;
 			}
 
@@ -1946,7 +1943,6 @@ public class SoundPhysics {
 			}
 
 			if (isRain) {
-
 				setEnvironment(
 						sourceID,
 						sendGain0,
@@ -1961,7 +1957,6 @@ public class SoundPhysics {
 						directGain,
 						airAbsorptionFactor
 				);
-
 				return;
 			}
 
@@ -2061,15 +2056,12 @@ public class SoundPhysics {
 						);
 
 				if (rayHit != null) {
-
 					directionDebug.addLine(
 							rayStart,
 							rayHit.hitVec,
 							SoundDirectionDebug.COLOR_PRIMARY
 					);
-
 				} else {
-
 					directionDebug.addLine(
 							rayStart,
 							rayEnd,
@@ -2099,9 +2091,6 @@ public class SoundPhysics {
 
 				/*
 				 * Check the first reflection point.
-				 *
-				 * getSharedAirspace now ignores the block
-				 * that generated this reflection.
 				 */
 				final Vec3d firstSharedAirspaceVector =
 						getSharedAirspace(
@@ -2112,7 +2101,6 @@ public class SoundPhysics {
 						);
 
 				if (firstSharedAirspaceVector != null) {
-
 					reflectedAudio.addSharedAirspace(
 							firstSharedAirspaceVector,
 							totalRayDistance
@@ -2124,12 +2112,6 @@ public class SoundPhysics {
 					final Vec3d newRayDir =
 							reflect(lastRayDir, lastHitNormal);
 
-					/*
-					 * Start directly at the reflection point.
-					 *
-					 * The previous block is passed separately
-					 * and explicitly excluded from ray tracing.
-					 */
 					final Vec3d newRayStart = lastHitPos;
 
 					final Vec3d newRayEnd = new Vec3d(
@@ -2181,6 +2163,66 @@ public class SoundPhysics {
 
 					if (newRayHit == null) {
 
+						/*
+						 * The reflected ray can leave a corridor or room
+						 * without hitting another block.
+						 *
+						 * Check whether the ray segment passes close enough
+						 * to the listener to represent a valid arrival path.
+						 */
+
+						final Vec3d listenerFromRayStart =
+								playerPos.subtract(newRayStart);
+
+						final double projection = Math.max(
+								0.0D,
+								Math.min(
+										maxDistance,
+										listenerFromRayStart.dotProduct(newRayDir)
+								)
+						);
+
+						final Vec3d closestRayPoint =
+								newRayStart.add(
+										newRayDir.scale(projection)
+								);
+
+						final double listenerDistanceToRay =
+								closestRayPoint.distanceTo(playerPos);
+
+						final double MAX_LISTENER_RAY_DISTANCE = 1.25D;
+
+						if (listenerDistanceToRay <= MAX_LISTENER_RAY_DISTANCE) {
+
+							/*
+							 * The final segment from the reflected ray
+							 * to the listener must also be unobstructed.
+							 */
+
+							final Vec3d sharedAirspaceVector =
+									getSharedAirspace(
+											closestRayPoint,
+											playerPos,
+											worldSnapshot,
+											directionDebug,
+											SoundDirectionDebug.COLOR_VALID
+									);
+
+							if (sharedAirspaceVector != null) {
+
+								final double pathToRayPoint =
+										lastHitPos.distanceTo(closestRayPoint);
+
+								reflectedAudio.addSharedAirspace(
+										sharedAirspaceVector,
+										totalRayDistance + pathToRayPoint
+								);
+							}
+						}
+
+						/*
+						 * Preserve the existing reverb distance calculation.
+						 */
 						totalRayDistance +=
 								(float) lastHitPos.distanceTo(playerPos);
 
@@ -2205,12 +2247,6 @@ public class SoundPhysics {
 						if (!Config.simplerSharedAirspaceSimulation ||
 								j == rayBounces - 1) {
 
-							/*
-							 * No normal offset.
-							 *
-							 * Explicitly ignore the block that produced
-							 * the current reflection.
-							 */
 							final Vec3d finalRayStart = lastHitPos;
 
 							final Vec3d sharedAirspaceVector =
@@ -2289,7 +2325,6 @@ public class SoundPhysics {
 				}
 			}
 
-
 			final Vec3d redirectedSoundPos =
 					reflectedAudio.evaluateSoundPosition(
 							soundPos,
@@ -2303,13 +2338,6 @@ public class SoundPhysics {
 						redirectedSoundPos
 				);
 
-				/*
-				 * Store the apparent position relative to the original
-				 * source coordinates.
-				 *
-				 * Moving sounds can reuse this offset between
-				 * full acoustic evaluations.
-				 */
 				final Vec3d originalPosition =
 						new Vec3d(posX, posY, posZ);
 
@@ -2329,7 +2357,6 @@ public class SoundPhysics {
 					sourceID,
 					occlusionAccumulation
 			);
-
 
 			bounceReflectivityRatio[0] /= numRays;
 			bounceReflectivityRatio[1] /= numRays;
@@ -2484,7 +2511,7 @@ public class SoundPhysics {
 
 			SOUND_POSITION_OFFSETS.remove(sourceID);
 
-			logger.error("Error while evaluation environment:", e);
+			logger.error("Error while evaluating environment:", e);
 
 			setEnvironment(
 					sourceID,
