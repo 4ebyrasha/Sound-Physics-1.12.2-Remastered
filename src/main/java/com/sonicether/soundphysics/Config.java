@@ -13,18 +13,27 @@ import net.minecraftforge.fml.common.event.FMLInitializationEvent;
 import net.minecraftforge.fml.common.event.FMLPreInitializationEvent;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
+
 public class Config {
 
 	public static final Config instance;
 	private Configuration forgeConfig;
 
 	// general
+	public static float reverbAttenuationDistance;
+	public static float reverbDistance;
+	public static boolean soundDirectionEvaluation;
+	public static String[] soundDirectionPositionBiasOverrides;
+	public static boolean redirectNonOccludedSounds;
 	public static float rolloffFactor;
 	public static float globalReverbGain;
 	public static float globalVolumeMultiplier;
 	public static float globalReverbBrightness;
 	public static float soundDistanceAllowance;
 	public static float globalBlockAbsorption;
+	public static float defaultBlockOcclusionFactor;
 	public static float globalBlockReflectance;
 	public static float airAbsorption;
 	public static float snowAirAbsorptionFactor;
@@ -35,11 +44,20 @@ public class Config {
 	public static float globalEchoMultiplier;
 
 	// performance
+	public static boolean updateMovingSounds;
+	public static int soundUpdateInterval;
 	public static boolean skipRainOcclusionTracing;
 	public static int environmentEvaluationRays;
 	public static boolean simplerSharedAirspaceSimulation;
+	public static boolean strictOcclusion;
+	public static float occlusionVariation;
+	public static float nonFullBlockOcclusionFactor;
+	public static int maxOcclusionRays;
+	public static float maxOcclusion;
+	public static String[] soundRateLimits;
 
 	// block properties
+	public static String[] blockAcousticOverrides;
 	public static float stoneReflectivity;
 	public static float woodReflectivity;
 	public static float groundReflectivity;
@@ -57,6 +75,7 @@ public class Config {
 	// misc
 	public static boolean autoSteroDownmixLogging;
 	public static boolean injectorLogging;
+	public static boolean debugSoundDirection;
 
 	private static final String categoryGeneral = "General";
 	private static final String categoryPerformance = "Performance";
@@ -93,17 +112,73 @@ public class Config {
 		}
 	}
 
-	static String getBlacklist() {
-		StringBuilder blacklist = new StringBuilder();
 
-		for (String entry : downMixBlacklist) {
-			blacklist.append(entry).append("|");
+	static String getBlacklist() {
+
+		if (downMixBlacklist == null ||
+				downMixBlacklist.length == 0) {
+			return "(?!)";
 		}
 
-		blacklist.deleteCharAt(blacklist.length() - 1);
+		final StringBuilder blacklist =
+				new StringBuilder();
+
+		for (String entry : downMixBlacklist) {
+
+			if (entry == null) {
+				continue;
+			}
+
+			final String pattern = entry.trim();
+
+			if (pattern.isEmpty()) {
+				continue;
+			}
+
+			/*
+			 * Validate entries individually so one invalid
+			 * expression cannot prevent the sound system
+			 * from initializing.
+			 */
+			try {
+
+				Pattern.compile(pattern);
+
+			} catch (PatternSyntaxException e) {
+
+				SoundPhysics.logger.warn(
+						"Ignoring invalid Downmix Blacklist pattern '{}': {}",
+						pattern,
+						e.getMessage()
+				);
+
+				continue;
+			}
+
+			if (blacklist.length() > 0) {
+				blacklist.append('|');
+			}
+
+			/*
+			 * Group each expression to preserve its own
+			 * alternation and anchor behavior.
+			 */
+			blacklist.append("(?:")
+					.append(pattern)
+					.append(')');
+		}
+
+		/*
+		 * A never-matching expression is used instead of
+		 * compiling an empty string or deleting the last character.
+		 */
+		if (blacklist.length() == 0) {
+			return "(?!)";
+		}
 
 		return blacklist.toString();
 	}
+
 
 	public List<IConfigElement> getConfigElements() {
 		final ArrayList<IConfigElement> list = new ArrayList<IConfigElement>();
@@ -115,6 +190,27 @@ public class Config {
 		list.add(new ConfigElement(this.forgeConfig.getCategory(categoryMisc)));
 
 		return list;
+	}
+
+	private void syncReverbConfig() {
+
+		reverbAttenuationDistance = this.forgeConfig.getFloat(
+				"Reverb Attenuation Distance",
+				categoryGeneral,
+				0.0f,
+				0.0f,
+				8192.0f,
+				"Minimum reflected acoustic path length required for reverb generation. Set to 0 to disable."
+		);
+
+		reverbDistance = this.forgeConfig.getFloat(
+				"Reverb Distance",
+				categoryGeneral,
+				96.0f,
+				0.0f,
+				8192.0f,
+				"Distance in blocks at which reverb send gain reaches zero. Set to 0 to disable distance attenuation."
+		);
 	}
 
 	private void syncConfig() {
@@ -165,6 +261,15 @@ public class Config {
 				"The global amount of sound that will be absorbed when traveling through blocks."
 		);
 
+		defaultBlockOcclusionFactor = this.forgeConfig.getFloat(
+				"Default Block Occlusion Factor",
+				categoryGeneral,
+				1.0f,
+				0.0f,
+				10.0f,
+				"The default amount of occlusion contributed by a block when no material-specific value applies."
+		);
+
 		globalBlockReflectance = this.forgeConfig.getFloat(
 				"Global Block Reflectance",
 				categoryGeneral,
@@ -207,7 +312,7 @@ public class Config {
 				0.8f,
 				0.0f,
 				1.0f,
-				"How much sound is filtered when the player is underwater. 0.0 means no filter. 1.0 means fully filtered."
+				"How much sound is filtered when the listener or sound source is underwater. 0.0 means no filter. 1.0 means fully filtered"
 		);
 
 		noteBlockEnable = this.forgeConfig.getBoolean(
@@ -242,8 +347,139 @@ public class Config {
 				"The global volume multiplier of the echos, put to 0 to disable echos all together"
 		);
 
+		soundDirectionEvaluation = this.forgeConfig.getBoolean(
+				"Sound Direction Evaluation",
+				categoryGeneral,
+				true,
+				"If true, calculates the apparent sound direction based on reflected sound paths"
+		);
+
+		redirectNonOccludedSounds = this.forgeConfig.getBoolean(
+				"Skip Redirecting Non-Occluded Sounds",
+				categoryGeneral,
+				true,
+				"If true, sounds with a direct unobstructed path will not have their positions redirected"
+		);
+
+		SoundDirectionExclusions.configure(
+				this.forgeConfig.getStringList(
+						"Sound Direction Exclusions",
+						categoryGeneral,
+						new String[0],
+						"Sound event IDs that must keep their original source position. " +
+								"Reflected sound direction redirection is disabled for these sounds. " +
+								"Occlusion, filtering and reverberation remain active. " +
+								"Format: namespace:sound_event_id. " +
+								"Example: minecraft:entity.generic.explode"
+				)
+		);
+
+		soundDirectionPositionBiasOverrides =
+				this.forgeConfig.getStringList(
+						"Sound Direction Position Bias",
+						categoryGeneral,
+						new String[]{
+								"minecraft:block.grass.step=85",
+								"minecraft:block.stone.step=85",
+								"minecraft:block.wood.step=85",
+								"minecraft:block.sand.step=85",
+								"minecraft:block.gravel.step=85",
+								"minecraft:block.snow.step=85",
+								"minecraft:block.metal.step=85",
+								"minecraft:block.cloth.step=85"
+						},
+						"Per-sound original position bias. " +
+								"Moves the calculated apparent sound position " +
+								"towards the original sound source position. " +
+								"Format: sound_event_id=percentage. " +
+								"0 means normal acoustic positioning, " +
+								"50 means halfway towards the original position, " +
+								"100 restores the exact original sound position. " +
+								"Example: minecraft:block.grass.step=85"
+				);
+
+		SoundDirectionPositionBias.configure(
+				soundDirectionPositionBiasOverrides
+		);
+
 
 		// Performance
+		updateMovingSounds = this.forgeConfig.getBoolean(
+				"Update Moving Sounds",
+				categoryPerformance,
+				false,
+				"If true, moving and tickable sound sources will be periodically reevaluated by Sound Physics."
+		);
+
+		soundUpdateInterval = this.forgeConfig.getInt(
+				"Moving Sound Update Interval",
+				categoryPerformance,
+				5,
+				1,
+				200,
+				"Number of ticks between acoustic reevaluations of moving sound sources. Lower values increase processing frequency."
+		);
+
+		strictOcclusion = this.forgeConfig.getBoolean(
+				"Strict Occlusion",
+				categoryPerformance,
+				false,
+				"If true, only one path between the sound source and the listener is used instead of nine"
+		);
+
+		soundRateLimits = this.forgeConfig.getStringList(
+				"Sound Rate Limits",
+				categoryPerformance,
+				new String[]{
+						"minecraft:weather.rain=0",
+						"minecraft:weather.rain.above=0",
+						"minecraft:entity.lightning.thunder=0"
+				},
+				"Maximum acoustic evaluations per sound event per client tick. " +
+						"Format: sound_event_id=limit. " +
+						"-1 means unlimited, 0 disables acoustic processing, " +
+						"and positive values limit the number of evaluations. " +
+						"This does not disable actual sound playback."
+		);
+
+		SoundRateManager.configure(soundRateLimits);
+
+		occlusionVariation = this.forgeConfig.getFloat(
+				"Occlusion Variation",
+				categoryPerformance,
+				0.35f,
+				0.0f,
+				16.0f,
+				"Higher values mean smaller objects are less likely to occlude sounds. Set to 0 to disable variation for non-block sounds"
+		);
+
+		nonFullBlockOcclusionFactor = this.forgeConfig.getFloat(
+				"Non-Full Block Occlusion Factor",
+				categoryPerformance,
+				0.25f,
+				0.0f,
+				1.0f,
+				"If a ray hits a non-solid block face, its occlusion is multiplied by this value."
+		);
+
+		maxOcclusionRays = this.forgeConfig.getInt(
+				"Max Occlusion Rays",
+				categoryPerformance,
+				16,
+				1,
+				128,
+				"The maximum number of block intersections evaluated along each direct occlusion path."
+		);
+
+		maxOcclusion = this.forgeConfig.getFloat(
+				"Max Occlusion",
+				categoryPerformance,
+				64.0f,
+				0.0f,
+				1024.0f,
+				"The maximum accumulated block occlusion value. Higher values allow thicker walls to contribute to attenuation."
+		);
+
 		skipRainOcclusionTracing = this.forgeConfig.getBoolean(
 				"Skip Rain Occlusion Tracing",
 				categoryPerformance,
@@ -350,6 +586,17 @@ public class Config {
 				"Sound reflectivity for snow blocks."
 		);
 
+		blockAcousticOverrides = this.forgeConfig.getStringList(
+				"Block Acoustic Overrides",
+				categoryMaterialProperties,
+				new String[0],
+				"Per-block acoustic overrides. Format: modid:block=occlusion,reflectivity. " +
+						"Occlusion range: 0-10. Reflectivity range: 0-1. " +
+						"Overrides SoundType defaults. Global multipliers are still applied."
+		);
+
+		BlockAcousticManager.configure(blockAcousticOverrides);
+
 
 		// Audio loading
 		autoSteroDownmix = this.forgeConfig.getBoolean(
@@ -390,6 +637,15 @@ public class Config {
 				"If true, Logs debug info about the injector"
 		);
 
+		debugSoundDirection = this.forgeConfig.getBoolean(
+				"Debug Sound Direction",
+				categoryMisc,
+				false,
+				"Writes detailed text diagnostics for sound direction evaluation to the client log. Includes ray counts, reflection paths, direction coherence and apparent source position."
+		);
+
+
+		syncReverbConfig();
 		SoundPhysics.applyConfigChanges();
 
 		if (this.forgeConfig.hasChanged()) {

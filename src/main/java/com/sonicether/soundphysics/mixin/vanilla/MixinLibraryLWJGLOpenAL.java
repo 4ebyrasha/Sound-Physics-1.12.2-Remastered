@@ -16,13 +16,32 @@ import paulscode.sound.libraries.LibraryLWJGLOpenAL;
 @Mixin(value = LibraryLWJGLOpenAL.class, remap = false)
 public class MixinLibraryLWJGLOpenAL {
 
-    @ModifyVariable(method = "loadSound(Lpaulscode/sound/FilenameURL;)Z", at = @At(value = "STORE", opcode = Opcodes.ASTORE))
-    private SoundBuffer modifyBuffer(SoundBuffer buffer, @Local FilenameURL filenameURL ) {
-        return SoundPhysics.onLoadSound(buffer, filenameURL.getFilename());
+    @ModifyVariable(
+            method = "loadSound(Lpaulscode/sound/FilenameURL;)Z",
+            at = @At(value = "STORE", opcode = Opcodes.ASTORE)
+    )
+    private SoundBuffer modifyBuffer(
+            SoundBuffer buffer,
+            @Local FilenameURL filenameURL
+    ) {
+        return SoundPhysics.onLoadSound(
+                buffer,
+                filenameURL.getFilename()
+        );
     }
 
-    @Inject(method = "loadSound(Lpaulscode/sound/SoundBuffer;Ljava/lang/String;)Z", at = @At(value = "HEAD"))
-    private void modifyBuffer2(SoundBuffer buffer, String identifier, CallbackInfoReturnable<Boolean> cir, @Local LocalRef<SoundBuffer> bufferLocalRef) {
-        bufferLocalRef.set(SoundPhysics.onLoadSound(buffer, identifier));
+    @Inject(
+            method = "loadSound(Lpaulscode/sound/SoundBuffer;Ljava/lang/String;)Z",
+            at = @At("HEAD")
+    )
+    private void modifyBuffer2(
+            SoundBuffer buffer,
+            String identifier,
+            CallbackInfoReturnable<Boolean> cir,
+            @Local LocalRef<SoundBuffer> bufferLocalRef
+    ) {
+        bufferLocalRef.set(
+                SoundPhysics.onLoadSound(buffer, identifier)
+        );
     }
 }

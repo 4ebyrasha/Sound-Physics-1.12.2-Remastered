@@ -16,12 +16,87 @@ public class MixinSourceLWJGLOpenAL extends Source {
     @Shadow
     private ChannelLWJGLOpenAL channelOpenAL = null;
 
-    public MixinSourceLWJGLOpenAL(boolean priority, boolean toStream, boolean toLoop, String sourcename, FilenameURL filenameURL, SoundBuffer soundBuffer, float x, float y, float z, int attModel, float distOrRoll, boolean temporary) {
-        super(priority, toStream, toLoop, sourcename, filenameURL, soundBuffer, x, y, z, attModel, distOrRoll, temporary);
+    public MixinSourceLWJGLOpenAL(
+            boolean priority,
+            boolean toStream,
+            boolean toLoop,
+            String sourcename,
+            FilenameURL filenameURL,
+            SoundBuffer soundBuffer,
+            float x,
+            float y,
+            float z,
+            int attModel,
+            float distOrRoll,
+            boolean temporary
+    ) {
+        super(
+                priority,
+                toStream,
+                toLoop,
+                sourcename,
+                filenameURL,
+                soundBuffer,
+                x,
+                y,
+                z,
+                attModel,
+                distOrRoll,
+                temporary
+        );
     }
 
-    @Inject(method = "play", at = @At(value = "INVOKE", target = "Lpaulscode/sound/Channel;play()V", shift = At.Shift.AFTER))
+    @Inject(
+            method = "play",
+            at = @At(
+                    value = "INVOKE",
+                    target = "Lpaulscode/sound/Channel;play()V",
+                    shift = At.Shift.AFTER
+            )
+    )
     private void injectPlay(Channel c, CallbackInfo ci) {
-        SoundPhysics.onPlaySound(this.position.x, this.position.y, this.position.z, this.channelOpenAL.ALSource.get(0));
+
+        if (channelOpenAL == null ||
+                channelOpenAL.ALSource == null ||
+                channelOpenAL.ALSource.limit() == 0 ||
+                this.position == null ||
+                this.sourcename == null) {
+            return;
+        }
+
+        SoundPhysics.onPlaySound(
+                this.sourcename,
+                this.position.x,
+                this.position.y,
+                this.position.z,
+                channelOpenAL.ALSource.get(0)
+        );
+    }
+
+    @Inject(
+            method = "setPosition(FFF)V",
+            at = @At("TAIL")
+    )
+    private void injectMovingSoundPosition(
+            float x,
+            float y,
+            float z,
+            CallbackInfo ci
+    ) {
+
+        if (channelOpenAL == null ||
+                channelOpenAL.ALSource == null ||
+                channelOpenAL.ALSource.limit() == 0 ||
+                this.sourcename == null) {
+            return;
+        }
+
+        SoundPhysics.onMovingSoundPosition(
+                this.sourcename,
+                x,
+                y,
+                z,
+                channelOpenAL.ALSource.get(0)
+        );
     }
 }

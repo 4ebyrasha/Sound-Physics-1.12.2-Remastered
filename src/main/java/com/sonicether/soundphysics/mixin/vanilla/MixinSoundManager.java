@@ -16,13 +16,59 @@ import org.spongepowered.asm.mixin.injection.callback.LocalCapture;
 
 @Mixin(SoundManager.class)
 public class MixinSoundManager {
-    @Inject(method = "playSound", locals = LocalCapture.CAPTURE_FAILSOFT, at = @At(value = "INVOKE", target = "Lnet/minecraft/client/audio/SoundManager$SoundSystemStarterThread;setPitch(Ljava/lang/String;F)V", shift = At.Shift.AFTER))
-    private void injectPlaySoundinjectPlaySound(ISound p_sound, CallbackInfo ci, SoundEventAccessor soundeventaccessor, ResourceLocation resourcelocation, Sound sound, float f3, float f, SoundCategory soundcategory, float f1, float f2, boolean flag, String s, ResourceLocation resourcelocation1) {
-        SoundPhysics.setLastSound(p_sound, soundcategory, sound.getSoundLocation(), resourcelocation);
+
+    @Inject(
+            method = "playSound",
+            locals = LocalCapture.CAPTURE_FAILSOFT,
+            at = @At(
+                    value = "INVOKE",
+                    target = "Lnet/minecraft/client/audio/SoundManager$SoundSystemStarterThread;setPitch(Ljava/lang/String;F)V",
+                    shift = At.Shift.AFTER,
+                    remap = false
+            )
+    )
+    private void injectPlaySound(
+            ISound p_sound,
+            CallbackInfo ci,
+            SoundEventAccessor soundeventaccessor,
+            ResourceLocation resourcelocation,
+            Sound sound,
+            float f3,
+            float f,
+            SoundCategory soundcategory,
+            float f1,
+            float f2,
+            boolean flag,
+            String sourceName,
+            ResourceLocation resourcelocation1
+    ) {
+        SoundPhysics.setLastSound(
+                p_sound,
+                soundcategory,
+                sound.getSoundLocation(),
+                resourcelocation,
+                sourceName
+        );
     }
 
-    @ModifyArg(method = "playSound", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/audio/SoundManager$SoundSystemStarterThread;setVolume(Ljava/lang/String;F)V"), index = 1)
+    @ModifyArg(
+            method = "playSound",
+            at = @At(
+                    value = "INVOKE",
+                    target = "Lnet/minecraft/client/audio/SoundManager$SoundSystemStarterThread;setVolume(Ljava/lang/String;F)V",
+                    remap = false
+            ),
+            index = 1
+    )
     private float modifySetVolume(float value) {
         return SoundPhysics.applyGlobalVolumeMultiplier(value);
+    }
+
+    @Inject(
+            method = "stopAllSounds",
+            at = @At("TAIL")
+    )
+    private void clearSoundSources(CallbackInfo ci) {
+        SoundPhysics.clearSoundSources();
     }
 }
