@@ -44,8 +44,9 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import com.cheba.apistalkerbase.acoustics.sound.IDuckingSoundWrapper;
+import com.cheba.apistalkerbase.acoustics.sound.IAcousticGainAwareSound;
 
-@Mod(modid = SoundPhysics.modid, clientSideOnly = true, acceptedMinecraftVersions = SoundPhysics.mcVersion, version = Tags.VERSION, guiFactory = "com.sonicether.soundphysics.SPGuiFactory")
+@Mod(modid = SoundPhysics.modid, clientSideOnly = true, acceptedMinecraftVersions = SoundPhysics.mcVersion, version = Tags.VERSION, guiFactory = "com.sonicether.soundphysics.SPGuiFactory", dependencies = "required-after:apistalkerbase;")
 public class SoundPhysics {
 
 	public static final String modid = "soundphysics";
@@ -111,6 +112,8 @@ public class SoundPhysics {
 			new ConcurrentHashMap<>();
 	private static final Map<String, SoundSourceData> SOUND_SOURCES =
 			new ConcurrentHashMap<>();
+	private static final ConcurrentHashMap<Integer, IAcousticGainAwareSound>
+			ACOUSTIC_DUCKING_SOURCES = new ConcurrentHashMap<>();
 
 
 
@@ -181,22 +184,26 @@ public class SoundPhysics {
 		private final String soundName;
 		private final ISound.AttenuationType attenuationType;
 		private final boolean moving;
+		private final IAcousticGainAwareSound acousticGainSound;
 
 		private volatile long lastEvaluationTick;
 		private volatile boolean acousticsEnabled;
+		private volatile int sourceID;
 
 		private SoundSourceData(
 				SoundCategory category,
 				String soundName,
 				ISound.AttenuationType attenuationType,
 				boolean moving,
-				long lastEvaluationTick
+				long lastEvaluationTick,
+				IAcousticGainAwareSound acousticGainSound
 		) {
 			this.category = category;
 			this.soundName = soundName;
 			this.attenuationType = attenuationType;
 			this.moving = moving;
 			this.lastEvaluationTick = lastEvaluationTick;
+			this.acousticGainSound = acousticGainSound;
 		}
 	}
 
@@ -676,6 +683,11 @@ public class SoundPhysics {
 			return;
 		}
 
+		IAcousticGainAwareSound acousticGainSound =
+				snd instanceof IAcousticGainAwareSound
+						? (IAcousticGainAwareSound) snd
+						: null;
+
 		SOUND_SOURCES.put(
 				sourceName,
 				new SoundSourceData(
@@ -683,7 +695,8 @@ public class SoundPhysics {
 						lastSoundName,
 						snd.getAttenuationType(),
 						moving,
-						getCurrentWorldTime()
+						getCurrentWorldTime(),
+						acousticGainSound
 				)
 		);
 	}
@@ -1032,7 +1045,7 @@ public class SoundPhysics {
 	}
 
 	private static void setDefaultEnvironment(final int sourceID) {
-
+		setAcousticDuckingGain(sourceID, 1.0F);
 		SOUND_POSITION_OFFSETS.remove(sourceID);
 
 		setEnvironment(
@@ -1052,14 +1065,28 @@ public class SoundPhysics {
 	}
 
 	public static void onSoundSourceRemoved(String sourceName) {
-		if (sourceName != null) {
-			SOUND_SOURCES.remove(sourceName);
+
+		if (sourceName == null) {
+			return;
+		}
+
+		SoundSourceData data = SOUND_SOURCES.remove(sourceName);
+
+		if (data != null
+				&& data.acousticGainSound != null
+				&& data.sourceID > 0) {
+
+			ACOUSTIC_DUCKING_SOURCES.remove(
+					data.sourceID,
+					data.acousticGainSound
+			);
 		}
 	}
 
 	public static void clearSoundSources() {
 		SOUND_SOURCES.clear();
 		SOUND_POSITION_OFFSETS.clear();
+		ACOUSTIC_DUCKING_SOURCES.clear();
 	}
 
 	/**
@@ -1080,6 +1107,17 @@ public class SoundPhysics {
 			return;
 		}
 
+		data.sourceID = sourceID;
+
+		if (data.acousticGainSound != null) {
+			ACOUSTIC_DUCKING_SOURCES.put(
+					sourceID,
+					data.acousticGainSound
+			);
+		} else {
+			ACOUSTIC_DUCKING_SOURCES.remove(sourceID);
+		}
+
 		data.lastEvaluationTick = getCurrentWorldTime();
 
 		if (data.moving && !Config.updateMovingSounds) {
@@ -1098,7 +1136,42 @@ public class SoundPhysics {
 				data.attenuationType
 		);
 
-		data.acousticsEnabled = data.moving && Config.updateMovingSounds;
+		data.acousticsEnabled =
+				data.moving && Config.updateMovingSounds;
+	}
+
+	private static void setAcousticDuckingGain(
+			int sourceID,
+			float gain
+	) {
+		if (sourceID <= 0) {
+			return;
+		}
+
+		IAcousticGainAwareSound sound =
+				ACOUSTIC_DUCKING_SOURCES.get(sourceID);
+
+		if (sound != null) {
+			sound.setAcousticGain(
+					MathHelper.clamp(gain, 0.0F, 1.0F)
+			);
+		}
+	}
+
+	private static float getAppliedAcousticGain(float directGain, int sourceID) {
+
+		if (!efxAvailable
+				|| efxContext == null
+				|| ALC10.alcGetCurrentContext() != efxContext
+				|| getSourceFilters(sourceID) == null) {
+			return 1.0F;
+		}
+
+		return MathHelper.clamp(
+				directGain,
+				0.0F,
+				1.0F
+		);
 	}
 
 	/**
@@ -1141,7 +1214,7 @@ public class SoundPhysics {
 		if (mc == null || mc.world == null) {
 
 			SOUND_POSITION_OFFSETS.remove(sourceID);
-
+			setAcousticDuckingGain(sourceID, 1.0F);
 			return;
 		}
 
@@ -1150,6 +1223,7 @@ public class SoundPhysics {
 
 		if (currentTick == Long.MIN_VALUE) {
 			SOUND_POSITION_OFFSETS.remove(sourceID);
+			setAcousticDuckingGain(sourceID, 1.0F);
 			return;
 		}
 
@@ -1871,6 +1945,7 @@ public class SoundPhysics {
 					attType == ISound.AttenuationType.NONE ||
 					(category == SoundCategory.RECORDS && !Config.updateMovingSounds) ||
 					category == SoundCategory.MUSIC) {
+				setAcousticDuckingGain(sourceID, 1.0F);
 
 				setEnvironment(
 						sourceID,
@@ -1882,7 +1957,7 @@ public class SoundPhysics {
 			}
 
 			final boolean isRain = rainPattern.matcher(name).matches();
-
+			setAcousticDuckingGain(sourceID, 1.0F);
 			if (Config.skipRainOcclusionTracing && isRain) {
 				setEnvironment(
 						sourceID,
@@ -1969,6 +2044,11 @@ public class SoundPhysics {
 			);
 
 			float directGain = (float) Math.pow(directCutoff, 0.1);
+
+			setAcousticDuckingGain(
+					sourceID,
+					getAppliedAcousticGain(directGain, sourceID)
+			);
 
 			float sendGain0 = 0.0f;
 			float sendGain1 = 0.0f;
@@ -2559,7 +2639,7 @@ public class SoundPhysics {
 			SOUND_POSITION_OFFSETS.remove(sourceID);
 
 			logger.error("Error while evaluating environment:", e);
-
+			setAcousticDuckingGain(sourceID, 1.0F);
 			setEnvironment(
 					sourceID,
 					0.0f, 0.0f, 0.0f, 0.0f,
@@ -2874,6 +2954,7 @@ public class SoundPhysics {
 	 */
 
 	public static void onOpenALSourceDestroyed(int sourceID) {
+		ACOUSTIC_DUCKING_SOURCES.remove(sourceID);
 
 		if (sourceID <= 0) {
 			return;
@@ -2962,7 +3043,7 @@ public class SoundPhysics {
 	 * destroyed automatically with it.
 	 */
 	public static void onOpenALContextDestroy() {
-
+		ACOUSTIC_DUCKING_SOURCES.clear();
 		efxContext = null;
 
 		reverbConfigDirty = true;
