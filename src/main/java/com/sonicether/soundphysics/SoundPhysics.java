@@ -1158,7 +1158,11 @@ public class SoundPhysics {
 		}
 	}
 
-	private static float getAppliedAcousticGain(float directGain, int sourceID) {
+	private static float getAppliedAcousticGain(
+			float directGain,
+			float directCutoff,
+			int sourceID
+	) {
 
 		if (!efxAvailable
 				|| efxContext == null
@@ -1167,8 +1171,25 @@ public class SoundPhysics {
 			return 1.0F;
 		}
 
-		return MathHelper.clamp(
+		float normalizedDirectGain = MathHelper.clamp(
 				directGain,
+				0.0F,
+				1.0F
+		);
+
+		float normalizedHighFrequencyGain = MathHelper.clamp(
+				directCutoff,
+				0.0F,
+				1.0F
+		);
+
+		// Оценка воспринимаемой громкости после обоих
+		// параметров EFX: direct gain и high-frequency gain.
+		return MathHelper.clamp(
+				(float) Math.sqrt(
+						normalizedDirectGain
+								* normalizedHighFrequencyGain
+				),
 				0.0F,
 				1.0F
 		);
@@ -2045,11 +2066,6 @@ public class SoundPhysics {
 
 			float directGain = (float) Math.pow(directCutoff, 0.1);
 
-			setAcousticDuckingGain(
-					sourceID,
-					getAppliedAcousticGain(directGain, sourceID)
-			);
-
 			float sendGain0 = 0.0f;
 			float sendGain1 = 0.0f;
 			float sendGain2 = 0.0f;
@@ -2068,6 +2084,15 @@ public class SoundPhysics {
 			)) {
 				directCutoff *= 1.0f - Config.underwaterFilter;
 			}
+
+			setAcousticDuckingGain(
+					sourceID,
+					getAppliedAcousticGain(
+							directGain,
+							directCutoff,
+							sourceID
+					)
+			);
 
 			if (isRain) {
 				setEnvironment(
