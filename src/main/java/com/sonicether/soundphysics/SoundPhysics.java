@@ -43,6 +43,7 @@ import net.minecraft.block.BlockTrapDoor;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import com.cheba.apistalkerbase.acoustics.sound.IDuckingSoundWrapper;
 
 @Mod(modid = SoundPhysics.modid, clientSideOnly = true, acceptedMinecraftVersions = SoundPhysics.mcVersion, version = Tags.VERSION, guiFactory = "com.sonicether.soundphysics.SPGuiFactory")
 public class SoundPhysics {
@@ -657,10 +658,16 @@ public class SoundPhysics {
 		lastSoundCategory = actualCategory;
 		lastSoundAtt = snd.getAttenuationType();
 
-		boolean moving = snd instanceof ITickableSound;
+		boolean moving;
 
-		// Preserve the original behavior of the global volume
-		// multiplier and stereo downmix for moving sounds.
+		if (snd instanceof IDuckingSoundWrapper) {
+			moving = ((IDuckingSoundWrapper) snd)
+					.isUnderlyingSoundTickable();
+		} else {
+			moving = snd instanceof ITickableSound;
+		}
+
+		// Сохраняем исходную классификацию движущихся звуков.
 		if (moving) {
 			lastSoundCategory = SoundCategory.RECORDS;
 		}
@@ -691,6 +698,46 @@ public class SoundPhysics {
 		} else {
 			return volume;
 		}
+	}
+
+	public static float applyGlobalVolumeMultiplierForUpdate(
+			final float volume,
+			final ISound sound
+	) {
+		if (sound == null || mc == null) {
+			return volume;
+		}
+
+		SoundCategory category = getSoundCategory(
+				sound.getCategory(),
+				sound.getSoundLocation().toString()
+		);
+
+		boolean moving;
+
+		if (sound instanceof IDuckingSoundWrapper) {
+			moving = ((IDuckingSoundWrapper) sound)
+					.isUnderlyingSoundTickable();
+		} else {
+			moving = sound instanceof ITickableSound;
+		}
+
+		if (moving) {
+			category = SoundCategory.RECORDS;
+		}
+
+		if (!Config.volumeMulOnlyAffected
+				|| !(mc.player == null
+				|| mc.world == null
+				|| category == SoundCategory.MASTER
+				|| sound.getAttenuationType() == ISound.AttenuationType.NONE
+				|| category == SoundCategory.RECORDS
+				|| category == SoundCategory.MUSIC)) {
+
+			return volume * globalVolumeMultiplier;
+		}
+
+		return volume;
 	}
 
 	/**

@@ -125,6 +125,7 @@ repositories {
 }
 
 dependencies {
+    implementation files('libs/apistalkerbase-1.0.jar')
     if (propertyBool('use_modern_java_syntax')) {
         annotationProcessor 'com.github.bsideup.jabel:jabel-javac-plugin:1.0.0'
         // Workaround for https://github.com/bsideup/jabel/issues/174
@@ -133,6 +134,7 @@ dependencies {
         compileOnly('com.github.bsideup.jabel:jabel-javac-plugin:1.0.0') {
             transitive = false
         }
+
 
         // Allow jdk.unsupported classes like sun.misc.Unsafe
         patchedMinecraft 'me.eigenraven.java8unsupported:java-8-unsupported-shim:1.0.0'

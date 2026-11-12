@@ -14,6 +14,9 @@ import org.spongepowered.asm.mixin.injection.ModifyArg;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.LocalCapture;
 
+import com.llamalad7.mixinextras.sugar.Local;
+import net.minecraft.client.audio.ITickableSound;
+
 @Mixin(SoundManager.class)
 public class MixinSoundManager {
 
@@ -71,4 +74,24 @@ public class MixinSoundManager {
     private void clearSoundSources(CallbackInfo ci) {
         SoundPhysics.clearSoundSources();
     }
+
+    @ModifyArg(
+            method = "updateAllSounds",
+            at = @At(
+                    value = "INVOKE",
+                    target = "Lnet/minecraft/client/audio/SoundManager$SoundSystemStarterThread;setVolume(Ljava/lang/String;F)V",
+                    remap = false
+            ),
+            index = 1
+    )
+    private float modifyTickableSoundVolume(
+            float volume,
+            @Local(ordinal = 0) ITickableSound sound
+    ) {
+        return SoundPhysics.applyGlobalVolumeMultiplierForUpdate(
+                volume,
+                sound
+        );
+    }
+
 }
