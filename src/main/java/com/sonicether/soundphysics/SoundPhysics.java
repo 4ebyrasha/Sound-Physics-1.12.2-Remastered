@@ -2085,14 +2085,6 @@ public class SoundPhysics {
 				directCutoff *= 1.0f - Config.underwaterFilter;
 			}
 
-			setAcousticDuckingGain(
-					sourceID,
-					getAppliedAcousticGain(
-							directGain,
-							directCutoff,
-							sourceID
-					)
-			);
 
 			if (isRain) {
 				setEnvironment(
@@ -2567,6 +2559,15 @@ public class SoundPhysics {
 			);
 
 			directGain = (float) Math.pow(directCutoff, 0.1);
+
+			setAcousticDuckingGain(
+					sourceID,
+					getAppliedAcousticGain(
+							directGain,
+							directCutoff,
+							sourceID
+					)
+			);
 
 			sendGain1 *= bounceReflectivityRatio[1];
 
