@@ -2087,6 +2087,16 @@ public class SoundPhysics {
 
 
 			if (isRain) {
+
+				setAcousticDuckingGain(
+						sourceID,
+						getAppliedAcousticGain(
+								directGain,
+								directCutoff,
+								sourceID
+						)
+				);
+
 				setEnvironment(
 						sourceID,
 						sendGain0,
@@ -2101,6 +2111,7 @@ public class SoundPhysics {
 						directGain,
 						airAbsorptionFactor
 				);
+
 				return;
 			}
 
